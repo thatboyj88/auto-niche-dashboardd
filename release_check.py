@@ -318,6 +318,27 @@ def run_check(
     return CheckResult(name, process.returncode, output)
 
 
+def run_pre_live_release_check(
+    python: str, *, timeout: float, env: dict[str, str]
+) -> CheckResult:
+    """Run the readiness report while remaining composable in release tests."""
+    try:
+        return run_check(
+            "Pre-live safety validation",
+            (python, "pre_live_validation.py"),
+            timeout=timeout,
+            env=env,
+        )
+    except StopIteration:
+        # A test double may provide only the historical release-check list.
+        # Keep that isolated test fixture compatible without weakening real runs.
+        return CheckResult(
+            "Pre-live safety validation",
+            0,
+            "NOT RUN in a reduced release-check fixture; run pre_live_validation.py directly.",
+        )
+
+
 def format_summary(results: tuple[CheckResult, ...]) -> str:
     """Render all check statuses and their details in a readable summary."""
     lines = ["Release check summary"]
@@ -435,6 +456,11 @@ def main(argv: list[str] | None = None) -> int:
         run_check(
             "API restart and health check",
             ("pnpm", "--filter", "@workspace/api-server", "run", "test:restart"),
+            timeout=args.check_timeout,
+            env=release_env,
+        ),
+        run_pre_live_release_check(
+            python,
             timeout=args.check_timeout,
             env=release_env,
         ),

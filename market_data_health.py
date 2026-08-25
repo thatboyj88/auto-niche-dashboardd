@@ -43,6 +43,7 @@ def inspect_candles(
     stale_after_seconds=None,
     provider_available=True,
     provider_error=None,
+    allow_missing_volume=False,
 ):
     """Return a JSON-safe health snapshot without changing candle data."""
     candles = list(candles or [])
@@ -68,14 +69,27 @@ def inspect_candles(
 
         try:
             values = {
-                field: float(candle[field])
+                field: (
+                    float(candle[field])
+                    if candle[field] is not None
+                    else None
+                )
                 for field in _REQUIRED_FIELDS
             }
         except (TypeError, ValueError):
             issues.append(f"candle {index + 1} has non-numeric values")
             continue
+        if values["volume"] is None:
+            if not allow_missing_volume:
+                issues.append(f"candle {index + 1} has non-numeric values")
+                continue
+            issues.append(f"candle {index + 1} is missing volume")
+        numeric_values = [
+            value for field, value in values.items()
+            if value is not None and (field != "volume" or not allow_missing_volume)
+        ]
 
-        if not all(math.isfinite(value) for value in values.values()):
+        if not all(math.isfinite(value) for value in numeric_values):
             issues.append(f"candle {index + 1} has non-finite values")
             continue
 
@@ -83,13 +97,16 @@ def inspect_candles(
         timestamps.append(timestamp)
         if timestamp <= 0:
             issues.append(f"candle {index + 1} has an invalid timestamp")
+        if timestamp > now + 300:
+            issues.append(f"candle {index + 1} is in the future")
         if min(
             values["open"],
             values["high"],
             values["low"],
             values["close"],
-            values["volume"],
-        ) <= 0:
+        ) <= 0 or (
+            values["volume"] is not None and values["volume"] <= 0
+        ):
             issues.append(f"candle {index + 1} has non-positive OHLCV")
         if values["high"] < max(values["open"], values["close"]):
             issues.append(f"candle {index + 1} has an invalid high")

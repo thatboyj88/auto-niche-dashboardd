@@ -108,6 +108,28 @@ class InvestmentDecisionTests(unittest.TestCase):
             OBSERVED_AT,
         )
 
+    def test_option_metadata_is_preserved_without_fabrication(self):
+        quote = option_quote(
+            implied_volatility=0.42,
+            delta=0.55,
+            gamma=0.03,
+            theta=-0.08,
+            vega=0.12,
+            volume=1200,
+            open_interest=4500,
+        )
+        analysis = analyze_defined_risk_option_strategy(
+            OptionStrategy.LONG_CALL, contracts=[quote], now=OPTION_NOW
+        ).to_dict()
+        self.assertEqual(analysis["quote_metadata"]["volume"], 1200)
+        self.assertEqual(analysis["quote_metadata"]["open_interest"], 4500)
+        self.assertEqual(analysis["quote_metadata"]["implied_volatility"], 0.42)
+        self.assertEqual(analysis["expiration_warning"], "NORMAL")
+
+    def test_invalid_optional_option_metadata_is_rejected(self):
+        with self.assertRaises(ValueError):
+            option_quote(volume=-1)
+
     def test_public_option_provider_does_not_invent_missing_observation_time(self):
         payload = {
             "optionChain": {

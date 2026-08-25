@@ -150,6 +150,18 @@ class IncrementalPaperEngineTests(unittest.TestCase):
         )
         self.assertEqual(self.engine.status()["genuine_signals"], 2)
         self.assertEqual(self.engine.status()["genuine_completed_trades"], 1)
+        signal = entry_events[0]["record"]["payload"]
+        trade = trade_events[1]["record"]["payload"]
+        self.assertIn(
+            signal["market_condition"],
+            {"Bull", "Sideways", "Bear"},
+        )
+        self.assertGreaterEqual(signal["max_drawdown_percent"], 0.0)
+        self.assertEqual(
+            trade["market_condition"],
+            signal["market_condition"],
+        )
+        self.assertGreaterEqual(trade["max_drawdown_percent"], 0.0)
         self.assertEqual(
             len(self.engine.adapter.store.read_records(dataset="PAPER_OPERATIONAL")),
             3,

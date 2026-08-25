@@ -20,6 +20,11 @@ from yahoo_btc_cad_data import YahooBTCADMarketData
 RSI_ENTRY_FLOOR = 60
 MIN_VALIDATION_SIGNALS_FOR_PROMOTION = 20
 MAX_VALIDATION_COST_SHARE_PERCENT = 50.0
+MIN_RESEARCH_PERIODS_FOR_PROMOTION = 2
+MAX_PROMOTION_EVIDENCE_AGE_DAYS = 30
+RESEARCH_LIFECYCLE_STAGES = (
+    "RESEARCH", "CANDIDATE", "BACKTEST", "STRESS_TEST", "PAPER_TEST", "VALIDATE",
+)
 _ORIGINAL_SCORE_FUNCTION = (
     strategy_backtest_module.calculate_strategy_score
 )
@@ -326,6 +331,89 @@ def _candidate_classification(candidate, research_comparison, validation_compari
     }
 
 
+def evaluate_promotion_gates(candidate, evidence=None, *, now=None):
+    """Return an auditable, fail-closed promotion decision.
+
+    Evidence is intentionally caller-supplied: this function never treats a
+    backtest or research result as paper observation evidence.
+    """
+    evidence = evidence if isinstance(evidence, dict) else {}
+    research = candidate.get("research") if isinstance(candidate, dict) else None
+    validation = candidate.get("validation") if isinstance(candidate, dict) else None
+    research = research if isinstance(research, dict) else {}
+    validation = validation if isinstance(validation, dict) else {}
+    validation_performance = validation.get("performance") or {}
+    stages = {}
+    for stage in RESEARCH_LIFECYCLE_STAGES:
+        item = evidence.get(stage.lower())
+        if isinstance(item, dict):
+            stages[stage] = dict(item)
+        else:
+            stages[stage] = {"status": "BLOCKED", "reason": "evidence not supplied"}
+    # Only the outputs this study actually owns may be inferred.
+    if not evidence.get("research"):
+        stages["RESEARCH"] = {
+            "status": "PASS" if research.get("periods") else "BLOCKED",
+            "reason": "research periods available" if research.get("periods")
+            else "research periods are missing",
+            "source": "controlled candidate study",
+        }
+    if not evidence.get("candidate"):
+        stages["CANDIDATE"] = {
+            "status": "PASS" if candidate.get("name") else "BLOCKED",
+            "reason": "candidate identity declared" if candidate.get("name")
+            else "candidate identity is missing",
+        }
+    if not evidence.get("backtest"):
+        stages["BACKTEST"] = {
+            "status": "PASS" if candidate.get("research_period_results")
+            and candidate.get("validation_period_results") else "BLOCKED",
+            "reason": "chronological and untouched backtests available"
+            if candidate.get("research_period_results")
+            and candidate.get("validation_period_results")
+            else "research and validation backtests are incomplete",
+        }
+    gates = []
+    def gate(name, passed, reason):
+        gates.append({"name": name, "status": "PASS" if passed else "BLOCKED",
+                      "reason": reason})
+    gate("sample", validation_performance.get("buy_signals", 0)
+         >= MIN_VALIDATION_SIGNALS_FOR_PROMOTION,
+         f"validation requires at least {MIN_VALIDATION_SIGNALS_FOR_PROMOTION} signals")
+    gate("data_quality", evidence.get("data_quality") == "PASS"
+         and evidence.get("freshness") not in {"STALE", "UNAVAILABLE"},
+         "validated, fresh source-quality evidence is required")
+    gate("robustness", evidence.get("robustness") == "PASS",
+         "stress-test robustness evidence is required")
+    cost = validation_performance.get("cost_share_of_abs_gross_percent")
+    gate("costs", isinstance(cost, (int, float))
+         and cost < MAX_VALIDATION_COST_SHARE_PERCENT,
+         f"validation cost share must be below {MAX_VALIDATION_COST_SHARE_PERCENT:.0f}%")
+    gate("risk", evidence.get("risk") == "PASS",
+         "risk and drawdown evidence is required")
+    paper = evidence.get("paper_observation")
+    gate("paper_observation", paper == "PASS",
+         "qualified genuine paper-observation evidence is required")
+    for stage in RESEARCH_LIFECYCLE_STAGES:
+        if stages[stage].get("status") != "PASS":
+            gates.append({"name": f"stage:{stage.lower()}",
+                          "status": "BLOCKED",
+                          "reason": stages[stage].get("reason", "stage incomplete")})
+    blocked = [item["reason"] for item in gates if item["status"] != "PASS"]
+    return {
+        "status": "PROMOTED" if not blocked else "BLOCKED",
+        "lifecycle": stages,
+        "gates": gates,
+        "blocked_reasons": blocked,
+        "provenance": {
+            "candidate": candidate.get("name") if isinstance(candidate, dict) else None,
+            "research_source": research.get("source"),
+            "validation_source": validation.get("source"),
+            "uncertainty": "No production promotion is possible without every gate.",
+        },
+    }
+
+
 def _candidate_result(name, research_results, validation_results, research, validation):
     return {
         "name": name,
@@ -426,6 +514,7 @@ def run_strategy_candidate_study(notifier=None):
             research_comparison,
             validation_comparison,
         )
+        candidates[key]["promotion"] = evaluate_promotion_gates(candidates[key])
 
     return {
         "source": "Yahoo Finance BTC/CAD aggregated daily data",

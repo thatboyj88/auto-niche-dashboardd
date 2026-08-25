@@ -92,6 +92,13 @@ class NormalizedOptionContract:
     underlying_price: float
     multiplier: int
     observed_at: str
+    implied_volatility: float | None = None
+    delta: float | None = None
+    gamma: float | None = None
+    theta: float | None = None
+    vega: float | None = None
+    volume: float | None = None
+    open_interest: float | None = None
 
     def __post_init__(self) -> None:
         if not self.underlying.strip():
@@ -119,6 +126,15 @@ class NormalizedOptionContract:
             raise InvestmentDecisionValidationError(
                 "expiration and observed_at must include a timezone"
             )
+        for name in (
+            "implied_volatility", "delta", "gamma", "theta", "vega",
+            "volume", "open_interest",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _finite_number(value, name)
+                if name in {"implied_volatility", "volume", "open_interest"} and value < 0:
+                    raise InvestmentDecisionValidationError(f"{name} must be non-negative")
 
     @property
     def mid(self) -> float:
@@ -148,6 +164,7 @@ class OptionStrategyAnalysis:
     slippage: float
     days_to_expiration: int
     contracts: int = 1
+    quote_metadata: dict | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "strategy", _enum_value(
@@ -175,6 +192,9 @@ class OptionStrategyAnalysis:
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["strategy"] = self.strategy.value
+        result["expiration_warning"] = (
+            "EXPIRING SOON" if self.days_to_expiration < 7 else "NORMAL"
+        )
         return result
 
 
@@ -237,6 +257,13 @@ def normalize_option_contract(
             underlying_price=float(contract["underlying_price"]),
             multiplier=multiplier,
             observed_at=str(contract["observed_at"]),
+            implied_volatility=contract.get("implied_volatility"),
+            delta=contract.get("delta"),
+            gamma=contract.get("gamma"),
+            theta=contract.get("theta"),
+            vega=contract.get("vega"),
+            volume=contract.get("volume"),
+            open_interest=contract.get("open_interest"),
         )
         return normalized
     except (InvestmentDecisionValidationError, TypeError, ValueError, OverflowError) as error:
@@ -336,7 +363,21 @@ def analyze_defined_risk_option_strategy(
     )
     return OptionStrategyAnalysis(
         strategy, first.underlying, scaled[0], scaled[1], scaled[2], scaled[3],
-        scaled[4], scaled[5], dte, quantity
+        scaled[4], scaled[5], dte, quantity,
+        {
+            "bid": first.bid,
+            "ask": first.ask,
+            "mid": first.mid,
+            "implied_volatility": first.implied_volatility,
+            "delta": first.delta,
+            "gamma": first.gamma,
+            "theta": first.theta,
+            "vega": first.vega,
+            "volume": first.volume,
+            "open_interest": first.open_interest,
+            "expiration": first.expiration,
+            "observed_at": first.observed_at,
+        },
     )
 
 
@@ -483,6 +524,13 @@ def fetch_public_option_quote_candidates(
                                 "underlying_price": underlying_price,
                                 "multiplier": 100,
                                 "observed_at": observed_at,
+                                "implied_volatility": leg.get("impliedVolatility"),
+                                "delta": leg.get("delta"),
+                                "gamma": leg.get("gamma"),
+                                "theta": leg.get("theta"),
+                                "vega": leg.get("vega"),
+                                "volume": leg.get("volume"),
+                                "open_interest": leg.get("openInterest"),
                             }
                         ],
                     }

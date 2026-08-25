@@ -51,6 +51,20 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(context["research"]["regimes"]["Bull"]["completed_periods"], 1)
         self.assertIsInstance(context["market"]["latest_close"], int)
 
+    def test_context_can_carry_read_only_strategy_council(self):
+        council = {
+            "final_action": "WAIT",
+            "council": {"data_quality": "DATA_INSUFFICIENT"},
+            "governor": {"approved": False},
+        }
+        context = build_assistant_context(
+            self.results, {"strategy_score": 88, "decision": "BUY"},
+            self.market, self.candles, self.historical,
+            council_context=council,
+        )
+        self.assertEqual(context["strategy_council"]["final_action"], "WAIT")
+        self.assertFalse(context["strategy_council"]["governor"]["approved"])
+
     def test_missing_data_is_unknown(self):
         context = build_assistant_context(None, None, Mock(), [], None)
         self.assertEqual(context["strategy"]["latest_score"], UNKNOWN)
@@ -88,6 +102,34 @@ class AssistantTests(unittest.TestCase):
         )
         self.assertTrue(response.startswith("FACT\n"))
         self.assertIn("Paper trading: ENABLED", response)
+
+    def test_read_only_fallback_answers_decision_why_and_change_questions(self):
+        from ai_operations_assistant import ReadOnlySummaryProvider
+
+        context = {
+            "market": {
+                "source": "XBT/CAD · Kraken",
+                "latest_close": 50000,
+                "latest_timestamp": 1700007200,
+            },
+            "strategy": {
+                "latest_decision": "HOLD",
+                "latest_score": 80,
+            },
+            "strategy_council": {
+                "governor": {"approved": False},
+                "final_action": "WAIT",
+            },
+        }
+        provider = ReadOnlySummaryProvider()
+        decision = provider.answer("What is your current decision?", context, [])
+        why = provider.answer("Why?", context, [])
+        change = provider.answer("What would make you change your decision?", context, [])
+        self.assertTrue(decision.startswith("FACT\n"))
+        self.assertIn("Current paper decision: WAIT", decision)
+        self.assertIn("XBT/CAD · Kraken", why)
+        self.assertTrue(why.startswith("ANALYSIS\n"))
+        self.assertIn("fresh, healthy market", change)
 
     def test_provider_failure_keeps_read_only_fallback_response_unchanged(self):
         provider = Mock()

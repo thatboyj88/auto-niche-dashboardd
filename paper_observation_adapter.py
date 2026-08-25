@@ -18,6 +18,19 @@ class PaperObservationValidationError(ValueError):
     """Raised when an operational observation is incomplete or unsafe."""
 
 
+MARKET_CONDITION_VALUES = {
+    "Bull",
+    "Sideways",
+    "Bear",
+    "Strong Bull",
+    "Weak Bull",
+    "Neutral/Sideways",
+    "Weak Bear",
+    "Strong Bear",
+    "UNAVAILABLE",
+}
+
+
 def _require_text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise PaperObservationValidationError(f"{field} must be non-empty text")
@@ -57,6 +70,21 @@ def _require_non_negative_number(value: Any, field: str) -> float:
     return number
 
 
+def _require_optional_non_negative_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    return _require_non_negative_number(value, field)
+
+
+def _require_market_condition(value: Any, field: str) -> str:
+    condition = _require_text(value, field)
+    if condition not in MARKET_CONDITION_VALUES:
+        raise PaperObservationValidationError(
+            f"{field} is not an approved market-condition value"
+        )
+    return condition
+
+
 class PaperObservationAdapter:
     """Validated, append-only bridge for genuine paper operational events."""
 
@@ -73,6 +101,10 @@ class PaperObservationAdapter:
         entry_eligible: bool,
         market_data_timestamp: str,
         data_health: str,
+        market_condition: str = "UNAVAILABLE",
+        market_condition_detail: str = "UNAVAILABLE",
+        drawdown_percent: float | None = None,
+        max_drawdown_percent: float | None = None,
     ) -> dict[str, Any]:
         return self._signal_record(
             signal_id=signal_id,
@@ -82,6 +114,10 @@ class PaperObservationAdapter:
             entry_eligible=entry_eligible,
             market_data_timestamp=market_data_timestamp,
             data_health=data_health,
+            market_condition=market_condition,
+            market_condition_detail=market_condition_detail,
+            drawdown_percent=drawdown_percent,
+            max_drawdown_percent=max_drawdown_percent,
             persist=True,
         )
 
@@ -96,6 +132,12 @@ class PaperObservationAdapter:
         entry_eligible = kwargs["entry_eligible"]
         market_data_timestamp = kwargs["market_data_timestamp"]
         data_health = kwargs["data_health"]
+        market_condition = kwargs.get("market_condition", "UNAVAILABLE")
+        market_condition_detail = kwargs.get(
+            "market_condition_detail", "UNAVAILABLE"
+        )
+        drawdown_percent = kwargs.get("drawdown_percent")
+        max_drawdown_percent = kwargs.get("max_drawdown_percent")
         if not isinstance(entry_eligible, bool):
             raise PaperObservationValidationError("entry_eligible must be boolean")
         payload = {
@@ -105,6 +147,18 @@ class PaperObservationAdapter:
             "entry_eligible": entry_eligible,
             "market_data_timestamp": _require_timestamp(market_data_timestamp, "market_data_timestamp"),
             "data_health": _require_text(data_health, "data_health"),
+            "market_condition": _require_market_condition(
+                market_condition, "market_condition"
+            ),
+            "market_condition_detail": _require_market_condition(
+                market_condition_detail, "market_condition_detail"
+            ),
+            "drawdown_percent": _require_optional_non_negative_number(
+                drawdown_percent, "drawdown_percent"
+            ),
+            "max_drawdown_percent": _require_optional_non_negative_number(
+                max_drawdown_percent, "max_drawdown_percent"
+            ),
         }
         timestamp = _require_timestamp(observed_at, "observed_at")
         if not persist:
@@ -130,12 +184,20 @@ class PaperObservationAdapter:
         fees: float,
         slippage: float,
         exit_reason: str,
+        market_condition: str = "UNAVAILABLE",
+        market_condition_detail: str = "UNAVAILABLE",
+        drawdown_percent: float | None = None,
+        max_drawdown_percent: float | None = None,
     ) -> dict[str, Any]:
         return self._trade_record(
             trade_id=trade_id, signal_id=signal_id, entry_at=entry_at,
             exit_at=exit_at, entry_price=entry_price, exit_price=exit_price,
             profit_loss=profit_loss, fees=fees, slippage=slippage,
             exit_reason=exit_reason, persist=True,
+            market_condition=market_condition,
+            market_condition_detail=market_condition_detail,
+            drawdown_percent=drawdown_percent,
+            max_drawdown_percent=max_drawdown_percent,
         )
 
     def prepare_trade(self, **kwargs: Any) -> dict[str, Any]:
@@ -147,6 +209,12 @@ class PaperObservationAdapter:
         entry_price, exit_price = kwargs["entry_price"], kwargs["exit_price"]
         profit_loss, fees = kwargs["profit_loss"], kwargs["fees"]
         slippage, exit_reason = kwargs["slippage"], kwargs["exit_reason"]
+        market_condition = kwargs.get("market_condition", "UNAVAILABLE")
+        market_condition_detail = kwargs.get(
+            "market_condition_detail", "UNAVAILABLE"
+        )
+        drawdown_percent = kwargs.get("drawdown_percent")
+        max_drawdown_percent = kwargs.get("max_drawdown_percent")
         entry_timestamp = _require_timestamp(entry_at, "entry_at")
         exit_timestamp = _require_timestamp(exit_at, "exit_at")
         payload = {
@@ -159,6 +227,18 @@ class PaperObservationAdapter:
             "fees": _require_non_negative_number(fees, "fees"),
             "slippage": _require_non_negative_number(slippage, "slippage"),
             "exit_reason": _require_text(exit_reason, "exit_reason"),
+            "market_condition": _require_market_condition(
+                market_condition, "market_condition"
+            ),
+            "market_condition_detail": _require_market_condition(
+                market_condition_detail, "market_condition_detail"
+            ),
+            "drawdown_percent": _require_optional_non_negative_number(
+                drawdown_percent, "drawdown_percent"
+            ),
+            "max_drawdown_percent": _require_optional_non_negative_number(
+                max_drawdown_percent, "max_drawdown_percent"
+            ),
         }
         if datetime.fromisoformat(exit_timestamp.replace("Z", "+00:00")) < datetime.fromisoformat(entry_timestamp.replace("Z", "+00:00")):
             raise PaperObservationValidationError("exit_at must not precede entry_at")

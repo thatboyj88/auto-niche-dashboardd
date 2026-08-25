@@ -32,7 +32,28 @@ class PaperObservationAdapterTests(unittest.TestCase):
 
         self.assertEqual(record["dataset"], PAPER_OPERATIONAL)
         self.assertEqual(record["record_type"], SIGNAL)
+        self.assertEqual(record["payload"]["market_condition"], "UNAVAILABLE")
+        self.assertIsNone(record["payload"]["max_drawdown_percent"])
         self.assertEqual(len(self.adapter.store.read_records()), 1)
+
+    def test_records_optional_risk_and_condition_context(self):
+        record = self.adapter.record_signal(
+            signal_id="signal-context",
+            observed_at="2026-08-21T10:00:00+00:00",
+            symbol="BTC/CAD",
+            strategy_score=82.5,
+            entry_eligible=True,
+            market_data_timestamp="2026-08-21T09:59:00+00:00",
+            data_health="healthy",
+            market_condition="Bull",
+            market_condition_detail="Strong Bull",
+            drawdown_percent=1.25,
+            max_drawdown_percent=2.5,
+        )
+
+        self.assertEqual(record["payload"]["market_condition"], "Bull")
+        self.assertEqual(record["payload"]["market_condition_detail"], "Strong Bull")
+        self.assertEqual(record["payload"]["max_drawdown_percent"], 2.5)
 
     def test_records_completed_trade_without_changing_account_state(self):
         record = self.adapter.record_trade(

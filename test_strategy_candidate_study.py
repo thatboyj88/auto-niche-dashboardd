@@ -8,6 +8,7 @@ from strategy_candidate_study import (
     MAX_VALIDATION_COST_SHARE_PERCENT,
     _candidate_classification,
     _compare_groups,
+    evaluate_promotion_gates,
     patched_candidate_score,
     rsi_floor_score,
 )
@@ -94,6 +95,54 @@ class StrategyCandidateStudyTests(unittest.TestCase):
         )
 
         self.assertEqual(classification["classification"], "PROMISING")
+
+    def test_promotion_requires_every_lifecycle_stage_and_gate(self):
+        candidate = {
+            "name": "Candidate A",
+            "research": {"periods": [{"period": "A"}], "source": "fixed study"},
+            "validation": {"performance": {
+                "buy_signals": 25,
+                "cost_share_of_abs_gross_percent": 10.0,
+            }},
+            "research_period_results": [{"period": "A"}],
+            "validation_period_results": [{"period": "B"}],
+        }
+        evidence = {
+            "research": {"status": "PASS"},
+            "candidate": {"status": "PASS"},
+            "backtest": {"status": "PASS"},
+            "stress_test": {"status": "PASS"},
+            "paper_test": {"status": "PASS"},
+            "validate": {"status": "PASS"},
+            "data_quality": "PASS",
+            "freshness": "FRESH",
+            "robustness": "PASS",
+            "risk": "PASS",
+            "paper_observation": "PASS",
+        }
+        result = evaluate_promotion_gates(candidate, evidence)
+        self.assertEqual(result["status"], "PROMOTED")
+        self.assertFalse(result["blocked_reasons"])
+
+    def test_skipped_and_stale_evidence_blocks_promotion_with_reasons(self):
+        candidate = {
+            "name": "Candidate A",
+            "research": {"periods": [{"period": "A"}]},
+            "validation": {"performance": {"buy_signals": 2}},
+            "research_period_results": [{"period": "A"}],
+            "validation_period_results": [{"period": "B"}],
+        }
+        result = evaluate_promotion_gates(candidate, {
+            "data_quality": "PASS",
+            "freshness": "STALE",
+            "robustness": "PASS",
+            "risk": "PASS",
+            "paper_observation": "PASS",
+            "stress_test": {"status": "STALE", "reason": "stress report expired"},
+        })
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertTrue(any("20" in reason for reason in result["blocked_reasons"]))
+        self.assertIn("stress report expired", result["blocked_reasons"])
 
 
 if __name__ == "__main__":

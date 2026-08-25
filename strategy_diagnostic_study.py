@@ -6,6 +6,7 @@ from score_effectiveness_study import (
     select_score_study_periods,
 )
 from yahoo_btc_cad_data import YahooBTCADMarketData
+from historical_validation import measure_decision_consistency
 
 
 STARTING_CAPITAL = 25.00
@@ -576,6 +577,9 @@ def run_strategy_diagnostic_study(notifier=None):
     study = StrategyDiagnosticStudy()
     results = study.analyze(backtest["periods"], period_candles)
     results["unused_candles"] = backtest["unused_candles"]
+    results["decision_consistency"] = measure_decision_consistency(
+        period_candles
+    )
     return results
 
 
@@ -700,6 +704,15 @@ def print_report(results):
         print(f"- {evidence}")
     for note in diagnosis["insufficient_evidence"]:
         print(f"- Insufficient evidence: {note}")
+
+    consistency = results["decision_consistency"]
+    print("\n=== Decision consistency ===")
+    print(
+        f"{consistency['repeatable_cases']}/"
+        f"{consistency['case_count']} cases repeat exactly "
+        f"({consistency['repeatability_percent']:.2f}%)."
+    )
+    print(consistency["conclusion"])
 
 
 def main():

@@ -42,6 +42,29 @@ class IncrementalPaperEngineError(RuntimeError):
     """Raised when the paper engine cannot safely continue."""
 
 
+def classify_market_condition(
+    *,
+    price: float,
+    ema21: float,
+    ema50: float,
+    ema200: float,
+    long_term_trend: bool,
+    short_term_momentum: bool,
+) -> tuple[str, str]:
+    """Classify only from indicators available at the observed candle."""
+    bullish_alignment = price > ema21 > ema50 > ema200
+    bearish_alignment = price < ema21 < ema50 < ema200
+    if bullish_alignment and long_term_trend and short_term_momentum:
+        return "Bull", "Strong Bull"
+    if bullish_alignment or (price > ema21 and ema21 > ema50):
+        return "Bull", "Weak Bull"
+    if bearish_alignment and not short_term_momentum:
+        return "Bear", "Strong Bear"
+    if bearish_alignment or (price < ema21 and ema21 < ema50):
+        return "Bear", "Weak Bear"
+    return "Sideways", "Neutral/Sideways"
+
+
 class IncrementalPaperEngine:
     """Stateful, one-candle-at-a-time paper execution engine."""
 
@@ -136,6 +159,30 @@ class IncrementalPaperEngine:
         self._save_state()
         return events
 
+    def _update_drawdown(self, market_price: float) -> None:
+        equity = self.state["capital"] + (
+            self.state["position"] * market_price
+        )
+        self.state["current_equity"] = equity
+        self.state["peak_equity"] = max(
+            self.state["peak_equity"],
+            equity,
+        )
+        drawdown = max(
+            0.0,
+            (
+                (self.state["peak_equity"] - equity)
+                / self.state["peak_equity"] * 100
+            )
+            if self.state["peak_equity"] > 0
+            else 0.0,
+        )
+        self.state["drawdown_percent"] = drawdown
+        self.state["max_drawdown_percent"] = max(
+            self.state["max_drawdown_percent"],
+            drawdown,
+        )
+
     def status(self) -> dict[str, Any]:
         state = self.state
         return {
@@ -149,6 +196,9 @@ class IncrementalPaperEngine:
             "cash": state["capital"],
             "position": state["position"],
             "entry_price": state["entry_price"],
+            "current_equity": state["current_equity"],
+            "drawdown_percent": state["drawdown_percent"],
+            "max_drawdown_percent": state["max_drawdown_percent"],
             "last_error": state["last_error"],
             "persistence_health": state.get(
                 "persistence_health", self.adapter.store.persistence_health()
@@ -183,6 +233,15 @@ class IncrementalPaperEngine:
             average_volume,
             candle["volume"],
         )
+        self._update_drawdown(candle["close"])
+        market_condition, market_condition_detail = classify_market_condition(
+            price=candle["close"],
+            ema21=ema_21,
+            ema50=ema_50,
+            ema200=ema_200,
+            long_term_trend=conditions.get("long_term_trend", False),
+            short_term_momentum=conditions.get("short_term_momentum", False),
+        )
         signal_id = f"{symbol}:{candle['timestamp']}"
         signal = self.adapter.prepare_signal(
             signal_id=signal_id,
@@ -192,6 +251,10 @@ class IncrementalPaperEngine:
             entry_eligible=decision == "BUY CANDIDATE",
             market_data_timestamp=self._timestamp_iso(candle["timestamp"]),
             data_health=HEALTHY,
+            market_condition=market_condition,
+            market_condition_detail=market_condition_detail,
+            drawdown_percent=self.state["drawdown_percent"],
+            max_drawdown_percent=self.state["max_drawdown_percent"],
         )
         self.state["genuine_signals"] += 1
         self.state["last_signal"] = signal
@@ -243,6 +306,8 @@ class IncrementalPaperEngine:
                 "target_price": entry_price * (1 + TAKE_PROFIT_PERCENT),
                 "entry_signal_id": signal_id,
                 "entry_score": score,
+                "entry_market_condition": market_condition,
+                "entry_market_condition_detail": market_condition_detail,
                 "trades_today": self.state["trades_today"] + 1,
                 "capital": self.state["capital"] - position_value - entry_fee,
             }
@@ -261,21 +326,20 @@ class IncrementalPaperEngine:
         net_value = gross_value - exit_fee
         profit_loss = net_value - self.state["entry_value"]
         trade_id = f"{self.state['entry_at']}:{candle['timestamp']}"
-        record = self.adapter.prepare_trade(
-            trade_id=trade_id,
-            signal_id=signal_id,
-            entry_at=self.state["entry_at"],
-            exit_at=self._timestamp_iso(candle["timestamp"]),
-            entry_price=self.state["entry_price"],
-            exit_price=exit_price,
-            profit_loss=profit_loss,
-            fees=self.state["entry_fee"] + exit_fee,
-            slippage=self.state["entry_slippage"] + gross_value * SLIPPAGE_PERCENT,
-            exit_reason=reason,
+        entry_at = self.state["entry_at"]
+        entry_price = self.state["entry_price"]
+        entry_fee = self.state["entry_fee"]
+        entry_slippage = self.state["entry_slippage"]
+        market_condition = self.state.get(
+            "entry_market_condition",
+            "UNAVAILABLE",
+        )
+        market_condition_detail = self.state.get(
+            "entry_market_condition_detail",
+            "UNAVAILABLE",
         )
         self.state["capital"] += net_value
         self.state["genuine_completed_trades"] += 1
-        self.state["last_completed_trade"] = record
         self.state.update(
             {
                 "position": 0.0,
@@ -288,8 +352,28 @@ class IncrementalPaperEngine:
                 "target_price": 0.0,
                 "entry_signal_id": None,
                 "entry_score": 0,
+            "entry_market_condition": "UNAVAILABLE",
+            "entry_market_condition_detail": "UNAVAILABLE",
             }
         )
+        self._update_drawdown(candle["close"])
+        record = self.adapter.prepare_trade(
+            trade_id=trade_id,
+            signal_id=signal_id,
+            entry_at=entry_at,
+            exit_at=self._timestamp_iso(candle["timestamp"]),
+            entry_price=entry_price,
+            exit_price=exit_price,
+            profit_loss=profit_loss,
+            fees=entry_fee + exit_fee,
+            slippage=entry_slippage + gross_value * SLIPPAGE_PERCENT,
+            exit_reason=reason,
+            market_condition=market_condition,
+            market_condition_detail=market_condition_detail,
+            drawdown_percent=self.state["drawdown_percent"],
+            max_drawdown_percent=self.state["max_drawdown_percent"],
+        )
+        self.state["last_completed_trade"] = record
         return {"type": "TRADE", "record": record}
 
     def _load_state(self) -> dict[str, Any]:
@@ -315,6 +399,12 @@ class IncrementalPaperEngine:
             "current_day": None,
             "trades_today": 0,
             "daily_starting_capital": STARTING_CAPITAL,
+            "current_equity": STARTING_CAPITAL,
+            "peak_equity": STARTING_CAPITAL,
+            "drawdown_percent": 0.0,
+            "max_drawdown_percent": 0.0,
+            "entry_market_condition": "UNAVAILABLE",
+            "entry_market_condition_detail": "UNAVAILABLE",
             "last_error": None,
             "persistence_health": self.adapter.store.persistence_health(),
         }
@@ -361,6 +451,10 @@ class IncrementalPaperEngine:
             "target_price",
             "trades_today",
             "daily_starting_capital",
+            "current_equity",
+            "peak_equity",
+            "drawdown_percent",
+            "max_drawdown_percent",
         )
         for field in numeric_non_negative:
             value = state[field]

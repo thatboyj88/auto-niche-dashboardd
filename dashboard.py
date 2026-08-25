@@ -28,13 +28,29 @@ from ai_operations_assistant import (
     get_provider_health,
 )
 from research_providers import provider_catalog, research_readiness
+from strategy_candidate_study import (
+    RESEARCH_LIFECYCLE_STAGES,
+    evaluate_promotion_gates,
+)
 
 from generate_test_data import generate_candles
 from kraken_live_data import KrakenMarketData
+from market_intelligence import (
+    CoinbasePublicMarketProvider,
+    fetch_public_news_events,
+    MarketDataService,
+    compare_market_snapshots,
+)
+from market_data_health import UNAVAILABLE
 from multi_period_backtest import (
     BEAR_RETURN_PERCENT,
     BULL_RETURN_PERCENT,
     MultiPeriodBacktester,
+)
+from historical_validation import (
+    measure_decision_consistency,
+    summarize_genuine_paper_records,
+    summarize_historical_results,
 )
 from strategy_backtest import StrategyBacktester
 from yahoo_btc_cad_data import YahooBTCADMarketData
@@ -42,12 +58,26 @@ from investment_decision import (
     fetch_public_option_quote_candidates,
     review_defined_risk_option_candidates,
 )
+from portfolio_intelligence import analyze_portfolio
+from strategy_council import (
+    LENSES,
+    aggregate_strategy_council,
+    evaluate_risk_governor,
+    finalize_council_decision,
+)
 from observation_controller import (
     ObservationControlError,
     ObservationCriteria,
     apply_paper_control,
 )
 from observation_store import ObservationStore
+from testing_center import (
+    BLOCKED as TEST_BLOCKED,
+    NOT_CONFIGURED as TEST_NOT_CONFIGURED,
+    NOT_APPLICABLE as TEST_NOT_APPLICABLE,
+    pre_live_validation_registry,
+    run_pre_live_validation,
+)
 
 KOVA_VOICE_COMPONENT = components.declare_component(
     "kova_voice_assistant",
@@ -119,9 +149,38 @@ def format_market_timestamp(timestamp):
 
 
 def load_kraken_market_data():
-    market_data = KrakenMarketData(interval=60)
-    candles = market_data.load()
+    snapshot = _market_data_service().get()
+    market_data = snapshot
+    # Dashboard charts and live-display simulations fail closed.  The
+    # observation runner has its own loader and is deliberately unaffected.
+    candles = list(snapshot.candles) if snapshot.health.get("status") == "HEALTHY" else []
     return market_data, candles
+
+
+@st.cache_resource
+def _market_data_service():
+    return MarketDataService()
+
+
+@st.cache_resource
+def _coinbase_market_data_service():
+    return MarketDataService(provider=CoinbasePublicMarketProvider())
+
+
+def load_market_provider_comparison(primary_snapshot):
+    secondary_snapshot = _coinbase_market_data_service().get()
+    return compare_market_snapshots(primary_snapshot, secondary_snapshot)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_market_news():
+    """Cache public context briefly without coupling it to trading decisions."""
+    return fetch_public_news_events()
+
+
+def refresh_kraken_market_data():
+    """Force one read-only provider check for the operator UI."""
+    return _market_data_service().get(force_refresh=True)
 
 
 def _read_observation_json(path):
@@ -407,6 +466,29 @@ def load_live_observation_status():
     }
 
 
+def load_genuine_paper_metrics():
+    """Read paper evidence for comparison; never creates or mutates the store."""
+    data_dir = Path(os.getenv("OBSERVATION_DATA_DIR", ".data"))
+    observation_path = Path(
+        os.getenv(
+            "OBSERVATION_STORE_PATH",
+            str(data_dir / "observations.jsonl"),
+        )
+    )
+    if not observation_path.exists():
+        return None, "Genuine paper observation store is not available."
+    try:
+        with observation_path.open("r", encoding="utf-8") as handle:
+            records = [
+                json.loads(line)
+                for line in handle
+                if line.strip()
+            ]
+        return summarize_genuine_paper_records(records), None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        return None, f"Genuine paper observation evidence is unavailable: {error}"
+
+
 def _paper_control_paths():
     data_dir = Path(os.getenv("OBSERVATION_DATA_DIR", ".data"))
     return (
@@ -636,8 +718,23 @@ def run_historical_market_backtest(candles):
         starting_capital=STARTING_CAPITAL
     )
     if isinstance(candles[0], dict) and "timestamp" in candles[0]:
-        return backtester.run(candles)
-    return backtester.run_sources(candles)
+        result = backtester.run(candles)
+        period_candles = backtester.build_periods(candles)
+    else:
+        result = backtester.run_sources(candles)
+        period_candles = [
+            period_source["candles"]
+            for period_source in candles
+        ]
+        period_candles = [
+            period
+            for source_candles in period_candles
+            for period in backtester.build_periods(source_candles)
+        ]
+    result["decision_consistency"] = measure_decision_consistency(
+        period_candles
+    )
+    return result
 
 
 def render_live_market_data(market_data, candles):
@@ -886,6 +983,73 @@ def render_historical_market_backtest(results, market_data):
             "No complete 365-candle historical periods are available yet."
         )
         return
+
+    historical_summary = summarize_historical_results(results)
+    observation_summary, observation_error = load_genuine_paper_metrics()
+    st.subheader("Historical vs Genuine Paper Evidence")
+    st.caption(
+        "This comparison is read-only. Historical results are independent "
+        "Yahoo Finance daily simulations; genuine results are the operational "
+        "paper-observation record. No values are blended or promoted."
+    )
+    if observation_error:
+        st.warning(observation_error)
+    else:
+        comparison_rows = [
+            {
+                "Metric": "Completed trades",
+                "Longer history": historical_summary["trades"],
+                "Genuine observation": observation_summary["trades"],
+            },
+            {
+                "Metric": "Win rate",
+                "Longer history": f"{historical_summary['win_rate']:.2f}%",
+                "Genuine observation": f"{observation_summary['win_rate']:.2f}%",
+            },
+            {
+                "Metric": "Net profit / realized P/L",
+                "Longer history": f"${historical_summary['profit']:+.4f}",
+                "Genuine observation": f"${observation_summary['profit']:+.4f}",
+            },
+            {
+                "Metric": "Fees",
+                "Longer history": f"${historical_summary['fees']:.4f}",
+                "Genuine observation": f"${observation_summary['fees']:.4f}",
+            },
+            {
+                "Metric": "Estimated slippage",
+                "Longer history": f"${historical_summary['slippage']:.4f}",
+                "Genuine observation": f"${observation_summary['slippage']:.4f}",
+            },
+            {
+                "Metric": "Maximum drawdown",
+                "Longer history": f"{historical_summary['max_drawdown']:.2f}%",
+                "Genuine observation": (
+                    f"{observation_summary['max_drawdown']:.2f}%"
+                    if observation_summary["max_drawdown"] is not None
+                    else "Not captured yet"
+                ),
+            },
+            {
+                "Metric": "Strategy-score distribution",
+                "Longer history": str(historical_summary["strategy_score_distribution"]),
+                "Genuine observation": str(observation_summary["strategy_score_distribution"]),
+            },
+            {
+                "Metric": "Market-condition performance",
+                "Longer history": str(historical_summary["market_condition_performance"]),
+                "Genuine observation": str(
+                    observation_summary["market_condition_performance"]
+                    or "Not captured yet"
+                ),
+            },
+        ]
+        st.dataframe(comparison_rows, hide_index=True, width="stretch")
+        st.info(
+            "Validation finding: the longer history includes profitable and "
+            "loss-making bull periods after modeled fees and slippage. This "
+            "does not support changing strategy or enabling live trading."
+        )
 
     st.subheader("Period Results")
     st.dataframe(
@@ -2551,6 +2715,206 @@ def render_orbit_overview_styles():
             .orbit-panel { padding: .9rem; }
             .orbit-big-value { font-size: 1.55rem; }
         }
+        /* Vision-inspired Overview shell: presentation only. */
+        .vision-overview {
+            background:
+                radial-gradient(circle at 67% 31%, rgba(58, 63, 215, .34), transparent 25rem),
+                linear-gradient(135deg, rgba(9, 11, 32, .98), rgba(4, 24, 48, .98));
+            border-radius: 22px;
+            margin: -.25rem auto 1.25rem;
+            max-width: 1380px;
+            padding: 1.35rem 1.45rem 1.55rem;
+        }
+        .vision-page-head {
+            align-items: flex-end;
+            border-bottom: 1px solid rgba(161, 176, 255, .12);
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 1.25rem;
+            padding-bottom: .85rem;
+        }
+        .vision-breadcrumb {
+            color: #7e8bb2;
+            font-size: .68rem;
+            letter-spacing: .06em;
+            margin-bottom: .35rem;
+        }
+        .vision-breadcrumb strong { color: #e5e9ff; }
+        .vision-page-title {
+            color: #fff !important;
+            font-size: clamp(1.8rem, 4vw, 2.8rem);
+            font-weight: 800;
+            letter-spacing: -.06em;
+            line-height: 1;
+            margin: 0;
+        }
+        .vision-page-meta {
+            color: #8f9cc2;
+            font-size: .68rem;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+        }
+        .vision-sr-only {
+            border: 0;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            height: 1px;
+            margin: -1px;
+            overflow: hidden;
+            padding: 0;
+            position: absolute;
+            white-space: nowrap;
+            width: 1px;
+        }
+        .vision-kpi-grid {
+            display: grid;
+            gap: .9rem;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            margin-bottom: 1.05rem;
+        }
+        .vision-kpi {
+            background:
+                radial-gradient(circle at 95% 6%, var(--vision-glow), transparent 7rem),
+                linear-gradient(145deg, rgba(28, 35, 96, .95), rgba(14, 22, 57, .98));
+            border: 1px solid rgba(145, 158, 255, .19);
+            border-radius: 15px;
+            box-shadow: inset 0 1px rgba(255, 255, 255, .04), 0 12px 26px rgba(0, 0, 0, .2);
+            min-height: 105px;
+            padding: .9rem 1rem;
+            position: relative;
+        }
+        .vision-kpi::after {
+            background: var(--vision-accent);
+            bottom: 0;
+            content: "";
+            height: 2px;
+            left: 1rem;
+            opacity: .85;
+            position: absolute;
+            right: 1rem;
+        }
+        .vision-kpi-label {
+            color: #aeb8d4;
+            font-size: .65rem;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .vision-kpi-value {
+            color: #fff;
+            font-size: clamp(1.15rem, 2vw, 1.55rem);
+            font-weight: 800;
+            letter-spacing: -.045em;
+            margin-top: .5rem;
+        }
+        .vision-kpi-detail { color: #42e0b1; font-size: .68rem; font-weight: 700; }
+        .vision-kpi-detail.neutral { color: #9eabd0; }
+        .vision-kpi-detail.warn { color: #f6b35c; }
+        .vision-primary-grid {
+            display: grid;
+            gap: 1rem;
+            grid-template-columns: minmax(0, 1.35fr) minmax(270px, .65fr);
+            margin-bottom: 1rem;
+        }
+        .vision-card {
+            background: linear-gradient(145deg, rgba(19, 29, 75, .96), rgba(10, 17, 47, .98));
+            border: 1px solid rgba(145, 158, 255, .17);
+            border-radius: 18px;
+            box-shadow: inset 0 1px rgba(255, 255, 255, .035), 0 14px 30px rgba(0, 0, 0, .18);
+            min-width: 0;
+            overflow: hidden;
+            padding: 1.2rem;
+        }
+        .vision-card-title {
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 750;
+            letter-spacing: -.025em;
+            margin-bottom: .25rem;
+        }
+        .vision-card-note { color: #8e9cc2; font-size: .7rem; line-height: 1.45; }
+        .vision-observation {
+            background:
+                radial-gradient(circle at 88% 35%, rgba(117, 81, 255, .3), transparent 14rem),
+                linear-gradient(145deg, rgba(24, 32, 92, .98), rgba(9, 16, 48, .98));
+            min-height: 226px;
+            position: relative;
+        }
+        .vision-observation-copy { max-width: 62%; position: relative; z-index: 1; }
+        .vision-observation h2 {
+            color: #fff;
+            font-size: clamp(1.7rem, 4vw, 2.7rem);
+            letter-spacing: -.065em;
+            line-height: 1.02;
+            margin: .55rem 0 .7rem;
+        }
+        .vision-observation .orbit-eyebrow { color: #43d8ff; }
+        .vision-observation .orbit-state { margin-top: 1rem; }
+        .vision-observation-orb {
+            align-items: center;
+            display: flex;
+            inset: 0 1.2rem 0 auto;
+            justify-content: center;
+            position: absolute;
+            width: 34%;
+        }
+        .vision-observation-orb::before,
+        .vision-observation-orb::after {
+            border: 1px solid rgba(1, 190, 254, .4);
+            border-radius: 50%;
+            content: "";
+            height: 165px;
+            position: absolute;
+            transform: rotate(-28deg);
+            width: 70px;
+        }
+        .vision-observation-orb::after {
+            border-color: rgba(189, 93, 255, .5);
+            height: 190px;
+            transform: rotate(63deg);
+            width: 92px;
+        }
+        .vision-observation-orb img {
+            border: 1px solid rgba(255, 255, 255, .22);
+            border-radius: 50%;
+            box-shadow: 0 0 28px rgba(1, 190, 254, .55), 0 0 56px rgba(117, 81, 255, .25);
+            height: 82px;
+            position: relative;
+            width: 82px;
+            z-index: 1;
+        }
+        .vision-progress-row {
+            align-items: center;
+            display: flex;
+            gap: .7rem;
+            margin-top: 1rem;
+        }
+        .vision-progress-row .orbit-progress { flex: 1; margin-top: 0; }
+        .vision-progress-label { color: #42e0b1; font-size: .68rem; font-weight: 700; white-space: nowrap; }
+        .vision-secondary-grid {
+            display: grid;
+            gap: 1rem;
+            grid-template-columns: minmax(0, 1.45fr) minmax(240px, .7fr);
+        }
+        .vision-secondary-grid .mc-chart-card { margin: 0; }
+        @media (max-width: 900px) {
+            .vision-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .vision-primary-grid, .vision-secondary-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 600px) {
+            .vision-overview { border-radius: 15px; margin: -.4rem -.25rem 1rem; padding: .9rem .7rem 1rem; }
+            .vision-page-head { align-items: flex-start; flex-direction: column; gap: .5rem; }
+            .vision-page-title { font-size: 1.85rem; }
+            .vision-kpi-grid { gap: .55rem; }
+            .vision-kpi { min-height: 94px; padding: .72rem; }
+            .vision-kpi::after { left: .72rem; right: .72rem; }
+            .vision-observation { min-height: 280px; padding: 1rem; }
+            .vision-observation-copy { max-width: 66%; }
+            .vision-observation-orb { right: -.8rem; width: 45%; }
+            .vision-observation-orb img { height: 68px; width: 68px; }
+            .vision-observation-orb::before { height: 135px; width: 58px; }
+            .vision-observation-orb::after { height: 155px; width: 72px; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2727,6 +3091,7 @@ def render_mc_conditions(evaluation):
                 )
 
 
+@st.fragment(run_every="45s")
 def render_mc_live_market(market_data, candles):
     render_mc_section(
         "LIVE MARKET DISPLAY",
@@ -2734,6 +3099,7 @@ def render_mc_live_market(market_data, candles):
         "Public Kraken XBT/CAD data for display only; it is not connected "
         "to the paper backtest or any order endpoint.",
     )
+    render_mc_news_events()
     if not candles:
         st.error(
             "Kraken display data is unavailable. "
@@ -2750,14 +3116,51 @@ def render_mc_live_market(market_data, candles):
     )
     render_mc_metrics(
         [
-            ("BTC/CAD price", f"${latest['close']:,.2f}"),
+            (
+                "BTC/CAD price",
+                (
+                    f"${market_data.price:,.2f}"
+                    if getattr(market_data, "price", None) is not None
+                    else f"${latest['close']:,.2f}"
+                ),
+            ),
+            (
+                "Bid / ask",
+                (
+                    f"${market_data.bid:,.2f} / ${market_data.ask:,.2f}"
+                    if getattr(market_data, "bid", None) is not None
+                    and getattr(market_data, "ask", None) is not None
+                    else "Unavailable"
+                ),
+            ),
+            (
+                "24h volume",
+                (
+                    f"{market_data.volume:,.6f} BTC"
+                    if getattr(market_data, "volume", None) is not None
+                    else "Unavailable"
+                ),
+            ),
             ("Market regime", "Not classified (live display)"),
             ("Candle timestamp", format_market_timestamp(latest["timestamp"])),
             ("Loaded candles", str(len(candles))),
             ("1-candle change", f"{change:+.3f}%" if change is not None else "N/A"),
-            ("Source", market_data.pair_name or "XBT/CAD · Kraken"),
+            ("Source", getattr(market_data, "provider", None) or market_data.pair_name or "Kraken XBT/CAD"),
+            (
+                "Freshness",
+                (
+                    f"{market_data.freshness_age_seconds:.0f}s"
+                    if getattr(market_data, "freshness_age_seconds", None) is not None
+                    else "Unavailable"
+                ),
+            ),
         ],
-        columns=2,
+        columns=3,
+    )
+    st.caption(
+        f"Observed {format_market_timestamp(latest['timestamp'])} · "
+        f"received {format_market_timestamp(int(getattr(market_data, 'received_timestamp', latest['timestamp'])))} · "
+        "public display data only"
     )
     render_mc_line_chart(
         "BTC/CAD close",
@@ -2766,6 +3169,38 @@ def render_mc_live_market(market_data, candles):
         "BTC/CAD close",
         "KRAKEN PUBLIC DATA",
     )
+def render_mc_news_events():
+    """Show attributed market context separately from all decision surfaces."""
+    render_mc_section(
+        "NEWS & EVENT CONTEXT",
+        "Read-only market context",
+        "Public headlines are informational only and cannot change strategy, risk, "
+        "paper controls, or observation evidence.",
+    )
+    snapshot = load_market_news()
+    if snapshot.status != "HEALTHY":
+        st.warning(
+            f"{snapshot.source} is unavailable. "
+            f"{snapshot.error or 'No fresh, well-formed items were returned.'}"
+        )
+        return
+    st.caption(
+        f"Source: {snapshot.source} · feed fetched "
+        f"{snapshot.fetched_at} · freshness is measured from each item timestamp"
+    )
+    for item in snapshot.items:
+        age = (
+            f"{item.freshness_age_seconds / 3600:.1f}h old"
+            if item.freshness_age_seconds is not None
+            else "freshness unavailable"
+        )
+        st.markdown(
+            f'<div class="mc-news-item"><a href="{escape(item.url)}" '
+            f'target="_blank" rel="noopener noreferrer">{escape(item.title)}</a>'
+            f'<div class="mc-news-meta">{escape(item.source)} · observed '
+            f'{escape(item.observed_at)} · {escape(age)}</div></div>',
+            unsafe_allow_html=True,
+        )
 
 
 def render_mc_account(results):
@@ -2863,6 +3298,46 @@ def render_mc_research_lab(results, market_data):
             "Yahoo Finance daily data. Regimes are research labels only; they "
             "do not change strategy decisions or auto-promote candidates."
         )
+        st.markdown("#### Research lifecycle and promotion")
+        st.caption(
+            "Stages are evidence boundaries, not execution states. Historical "
+            "backtests and paper observations are never interchangeable."
+        )
+        candidates = results.get("candidates", {}) if isinstance(results, dict) else {}
+        if candidates:
+            for candidate in candidates.values():
+                promotion = candidate.get("promotion") or evaluate_promotion_gates(candidate)
+                lifecycle = promotion["lifecycle"]
+                render_mc_metrics(
+                    [
+                        ("Candidate", candidate.get("name", "Unknown")),
+                        ("Lifecycle", " → ".join(
+                            f"{stage}:{lifecycle[stage].get('status', 'UNKNOWN')}"
+                            for stage in RESEARCH_LIFECYCLE_STAGES
+                        )),
+                        ("Promotion", promotion["status"]),
+                        ("Blocked reasons", str(len(promotion["blocked_reasons"]))),
+                    ],
+                    columns=2,
+                )
+                for reason in promotion["blocked_reasons"]:
+                    st.warning(reason)
+        else:
+            render_mc_metrics(
+                [
+                    ("Lifecycle", "RESEARCH → BACKTEST complete"),
+                    ("Candidate", "Not supplied by this historical view"),
+                    ("Stress test", "BLOCKED · evidence not supplied"),
+                    ("Paper test", "BLOCKED · genuine observation required"),
+                    ("Promotion", "BLOCKED"),
+                ],
+                columns=2,
+            )
+            st.warning(
+                "This historical study is not a promotion candidate. "
+                "Stress-test, paper-observation, validation, data-quality, "
+                "cost, and risk gates are not satisfied here."
+            )
         aggregate = results["aggregate"]
         render_mc_metrics(
             [
@@ -2889,6 +3364,31 @@ def render_mc_research_lab(results, market_data):
             ],
             columns=2,
         )
+        consistency = results.get("decision_consistency")
+        if consistency:
+            st.markdown("#### Decision consistency")
+            render_mc_metrics(
+                [
+                    (
+                        "Repeatability",
+                        f"{consistency['repeatable_cases']}/"
+                        f"{consistency['case_count']} cases",
+                    ),
+                    (
+                        "Consistency rate",
+                        f"{consistency['repeatability_percent']:.2f}%",
+                    ),
+                    ("Non-repeatable cases", str(consistency["non_repeatable_cases"])),
+                    ("Conclusion", consistency["conclusion"]),
+                ],
+                columns=2,
+            )
+            st.caption(
+                "Each fixed historical period was replayed twice under "
+                "baseline, zero-cost, and doubled-cost cases, with leading "
+                "and trailing boundary slices. These are research-only "
+                "replays and do not alter production thresholds."
+            )
         st.caption(
             "Benchmark comparison uses the same completed historical periods. "
             "Strategy return is net of modeled fees and slippage; it is not a "
@@ -2944,6 +3444,7 @@ def render_mc_system_health(
     market_data,
     historical_results,
     historical_market_data,
+    market_comparison=None,
 ):
     render_mc_section(
         "SYSTEM HEALTH",
@@ -3032,10 +3533,20 @@ def render_mc_system_health(
     )
 
     st.markdown("#### Diagnostics")
+    research_promotion = (
+        "BLOCKED · historical view is not a promotion candidate"
+        if historical_results
+        else "BLOCKED · research evidence unavailable"
+    )
     render_mc_metrics(
         [
             ("Observation store", "AVAILABLE" if snapshot.get("available") else "NOT STARTED"),
             ("Historical data", "AVAILABLE" if historical_results else "UNAVAILABLE"),
+            ("Research promotion", research_promotion),
+            (
+                "Promotion evidence",
+                "Stress test + paper observation + validation gates required",
+            ),
             (
                 "Historical source issue",
                 getattr(historical_market_data, "last_error", None) or "None",
@@ -3044,6 +3555,9 @@ def render_mc_system_health(
         columns=2,
     )
     render_mc_provider_health()
+    render_mc_market_provider_health(market_data)
+    if market_comparison is not None:
+        render_mc_market_provider_comparison(market_comparison)
 
 
 def render_mc_provider_health():
@@ -3094,6 +3608,122 @@ def render_mc_provider_health():
             "Failure category counts",
             format_failure_category_counts(provider_health["failure_categories"]),
         )
+
+
+def render_mc_market_provider_health(market_data):
+    """Show public market-provider telemetry and a safe manual test."""
+    st.markdown("#### Market provider")
+    health = getattr(market_data, "health", {}) or {}
+    state = health.get("status", UNAVAILABLE)
+    render_mc_status(
+        f"Market provider: {state}",
+        "green" if state == "HEALTHY" else "amber" if state == "DEGRADED" else "red",
+    )
+    render_mc_metrics(
+        [
+            ("Provider", getattr(market_data, "provider", None) or "Kraken public API"),
+            ("Pair", getattr(market_data, "pair_name", None) or "Unavailable"),
+            (
+                "Last success",
+                (
+                    format_market_timestamp(int(market_data.observed_timestamp))
+                    if getattr(market_data, "observed_timestamp", None) is not None
+                    else "Unavailable"
+                ),
+            ),
+            (
+                "Freshness",
+                (
+                    f"{market_data.freshness_age_seconds:.0f}s"
+                    if getattr(market_data, "freshness_age_seconds", None) is not None
+                    else "Unavailable"
+                ),
+            ),
+            (
+                "Latency",
+                (
+                    f"{market_data.latency_ms:.1f} ms"
+                    if getattr(market_data, "latency_ms", None) is not None
+                    else "Unavailable"
+                ),
+            ),
+            ("Credentials required", "NO"),
+            (
+                "Rate limit / degraded",
+                (
+                    "RATE LIMITED"
+                    if getattr(market_data, "rate_limited", False)
+                    else "DEGRADED"
+                    if state == "DEGRADED"
+                    else "NO"
+                ),
+            ),
+            ("Recent error", getattr(market_data, "last_error", None) or "None"),
+        ],
+        columns=2,
+    )
+    if st.button(
+        "Test public market connection",
+        key="test_public_market_provider",
+        help="Fetches one read-only Kraken public snapshot. It never accesses accounts or orders.",
+    ):
+        refreshed = refresh_kraken_market_data()
+        refreshed_state = (refreshed.health or {}).get("status", UNAVAILABLE)
+        if refreshed_state == "HEALTHY":
+            st.success(
+                f"Kraken public API responded successfully in "
+                f"{refreshed.latency_ms:.1f} ms."
+            )
+        else:
+            st.error(
+                f"Kraken public API is {refreshed_state.lower()}: "
+                f"{refreshed.error or 'snapshot unavailable'}"
+            )
+
+
+def render_mc_market_provider_comparison(comparison):
+    """Show an independent provider check without selecting or blending data."""
+    st.markdown("#### Independent provider comparison")
+    secondary = comparison.secondary
+    secondary_health = secondary.health or {}
+    state = comparison.status
+    render_mc_status(
+        "Provider comparison",
+        "green" if state == "HEALTHY" else "amber" if state == "DEGRADED" else "red",
+        state,
+    )
+    render_mc_metrics(
+        [
+            ("Comparison provider", secondary.provider),
+            ("Comparison pair", secondary.pair or "Unavailable"),
+            (
+                "Comparison price",
+                f"${secondary.price:,.2f}"
+                if secondary.price is not None else "Unavailable",
+            ),
+            (
+                "Price difference",
+                f"{comparison.price_difference_percent:.3f}%"
+                if comparison.price_difference_percent is not None else "Unavailable",
+            ),
+            ("Comparison health", secondary_health.get("status", UNAVAILABLE)),
+            (
+                "Comparison freshness",
+                (
+                    f"{secondary.freshness_age_seconds:.0f}s"
+                    if secondary.freshness_age_seconds is not None
+                    else "Unavailable"
+                ),
+            ),
+            ("Selected provider", comparison.primary.provider),
+            ("Automatic failover", "DISABLED"),
+        ],
+        columns=2,
+    )
+    st.caption(
+        f"{comparison.message} The dashboard and observation runner continue using "
+        f"{comparison.primary.provider} only; values are never blended."
+    )
 
 
 def render_mc_header(
@@ -3170,6 +3800,95 @@ def render_mc_return_to_overview():
         st.rerun()
 
 
+def render_mc_testing_center(market_data, live_candles):
+    """Render operator diagnostics without exposing mutation controls."""
+    render_mc_section(
+        "INTERACTIVE TESTING CENTER",
+        "Read-only diagnostics and isolated failure fixtures",
+        "Every check is safe to repeat. No credentials, orders, or genuine evidence are touched.",
+    )
+    st.info(
+        "This workspace tests boundaries using current snapshots and in-memory "
+        "fixtures. It cannot start, pause, stop, reset, or rewrite the paper runner."
+    )
+    registry = pre_live_validation_registry()
+    render_mc_metrics(
+        [
+            ("Registered checks", str(len(registry))),
+            ("Safety class", "READ-ONLY"),
+            ("Live trading", "DISABLED"),
+            ("Evidence writes", "DISABLED"),
+        ],
+        columns=2,
+    )
+    fixture_labels = {
+        "none": "No failure fixture",
+        "stale_data": "Stale market data",
+        "provider_outage": "Provider outage",
+        "duplicate_execution": "Duplicate execution",
+        "recovery": "State recovery",
+        "veto": "Risk Governor veto",
+        "risk_stress": "Paper-risk stress suite",
+    }
+    fixture = st.selectbox(
+        "Optional isolated failure fixture",
+        tuple(fixture_labels),
+        format_func=lambda value: fixture_labels[value],
+        key="testing_center_fixture",
+        help="Runs only an in-memory fixture; it never changes production or paper state.",
+    )
+    if st.button(
+        "Run read-only checks",
+        key="testing_center_run",
+        type="primary",
+        use_container_width=True,
+    ):
+        health = getattr(market_data, "health", {}) or {}
+        snapshot = load_live_observation_status()
+        st.session_state.testing_center_results = run_pre_live_validation(
+            {
+                "authenticated": _authenticated_user_key() is not None,
+                "routes": NAVIGATION_ITEMS,
+                "routes_valid": True,
+                "market_health": health,
+                "paper_trading": PAPER_TRADING,
+                "live_trading": LIVE_TRADING,
+                "observation_status": snapshot.get("status") if snapshot.get("available") else None,
+                "evidence_reconciled": snapshot.get("evidence_reconciled")
+                if snapshot.get("available") else None,
+                "api_status": None,
+            },
+            fixture=fixture,
+        )
+    report = st.session_state.get("testing_center_results")
+    if not report:
+        st.caption("No run yet. Checks are marked NOT RUN until the operator starts a run.")
+        return
+    results = report["checks"]
+    counts = report["summary"]
+    render_mc_status(
+        f"Readiness: {report['status']}",
+        "green" if report["status"] == "PASS" else "red"
+        if report["status"] == "FAIL" else "amber",
+    )
+    render_mc_metrics(
+        [(status, str(counts.get(status, 0))) for status in (
+            "PASS", "FAIL", TEST_BLOCKED, TEST_NOT_CONFIGURED,
+            TEST_NOT_APPLICABLE, "NOT RUN"
+        )],
+        columns=2,
+    )
+    for item in results:
+        indicator = (
+            "green" if item["status"] == "PASS"
+            else "red" if item["status"] == "FAIL"
+            else "amber"
+        )
+        with st.container(border=True):
+            render_mc_status(f"{item['name']} · {item['status']}", indicator)
+            st.caption(f"{item['detail']} Checked {item['checked_at']}.")
+
+
 def render_kova_voice_assistant(
     results,
     latest_evaluation,
@@ -3184,6 +3903,11 @@ def render_kova_voice_assistant(
         market_data,
         live_candles,
         historical_results,
+        council_context=build_mc_strategy_council(
+            latest_evaluation,
+            load_live_observation_status(),
+            live_candles,
+        ).to_dict(),
     )
     if "assistant_messages" not in st.session_state:
         st.session_state.assistant_messages = []
@@ -3432,6 +4156,187 @@ def render_mc_position_snapshot(results, latest_evaluation, live_candles):
     )
 
 
+def build_mc_strategy_council(latest_evaluation, observation_snapshot, live_candles):
+    """Adapt only existing signals; unavailable lenses remain unavailable."""
+    evaluation = latest_evaluation or {}
+    evidence = {
+        "trend": {
+            "status": "AVAILABLE" if isinstance(evaluation.get("long_term_trend"), bool) else "UNAVAILABLE",
+            "decision": "BUY" if evaluation.get("long_term_trend") else "HOLD",
+            "confidence": 50,
+            "reason": "Existing long-term trend condition.",
+        },
+        "momentum": {
+            "status": "AVAILABLE" if isinstance(evaluation.get("short_term_momentum"), bool) else "UNAVAILABLE",
+            "decision": "BUY" if evaluation.get("short_term_momentum") else "HOLD",
+            "confidence": 50,
+            "reason": "Existing short-term momentum condition.",
+        },
+    }
+    for lens in LENSES:
+        evidence.setdefault(
+            lens,
+            {
+                "status": "UNAVAILABLE",
+                "decision": "WAIT",
+                "reason": "No validated evidence in the current BTC/CAD strategy contract.",
+            },
+        )
+    council = aggregate_strategy_council(evidence)
+    snapshot = observation_snapshot or {}
+    cash = snapshot.get("cash")
+    position = snapshot.get("position", 0)
+    price = (
+        float(live_candles[-1]["close"])
+        if live_candles and live_candles[-1].get("close") is not None
+        else None
+    )
+    marked = (
+        float(cash) + float(position) * price
+        if isinstance(cash, (int, float)) and isinstance(position, (int, float)) and price
+        else None
+    )
+    exposure = float(position) * price if price and isinstance(position, (int, float)) else None
+    exposure_percent = exposure / marked if marked else None
+    governor = evaluate_risk_governor(
+        council.decision,
+        exposure_percent=exposure_percent,
+        concentration_percent=exposure_percent,
+        proposed_position_percent=MAX_POSITION_PERCENT if council.decision == "BUY" else 0,
+        data_health="HEALTHY" if live_candles else "UNAVAILABLE",
+        paper_trading=PAPER_TRADING,
+        live_trading=LIVE_TRADING,
+        safety_policy=bool(snapshot.get("evidence_reconciled", True)),
+    )
+    return finalize_council_decision(council, governor)
+
+
+def render_mc_strategy_council(latest_evaluation, live_candles, observation_snapshot):
+    render_mc_section(
+        "STRATEGY COUNCIL",
+        "Eight-lens consolidated decision",
+        "Each lens is shown explicitly. Missing evidence produces WAIT; "
+        "the Risk Governor has final veto authority.",
+    )
+    result = build_mc_strategy_council(
+        latest_evaluation, observation_snapshot, live_candles
+    )
+    council = result.council
+    render_mc_metrics(
+        [
+            ("Council decision", council.decision),
+            ("Final paper action", result.final_action),
+            ("Council confidence", f"{council.confidence:.1f}%" if council.confidence is not None else "Unavailable"),
+            ("Data quality", council.data_quality),
+            ("Disagreement", council.disagreement),
+            ("Risk Governor", "APPROVED" if result.governor.approved else "VETOED"),
+        ],
+        columns=2,
+    )
+    st.dataframe(
+        [
+            {
+                "Lens": lens.replace("_", " ").title(),
+                "Status": evidence["status"],
+                "Signal": evidence["decision"],
+                "Confidence": (
+                    f"{evidence['confidence']:.0f}%"
+                    if evidence["confidence"] is not None else "Unavailable"
+                ),
+                "Evidence": evidence["reason"],
+            }
+            for lens, evidence in council.lenses.items()
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    st.info(f"Council rationale: {council.rationale}")
+    if result.governor.veto_reason:
+        st.error(f"Risk Governor veto: {result.governor.veto_reason}")
+    else:
+        st.caption(f"Final action rationale: {result.final_reason}")
+    st.caption(
+        "This council is analysis-only. It cannot place orders, change thresholds, "
+        "or bypass genuine paper-observation evidence."
+    )
+
+
+def render_mc_portfolio_intelligence(live_candles, observation_snapshot=None):
+    """Render read-only allocation intelligence; never creates an order."""
+    render_mc_section(
+        "PORTFOLIO INTELLIGENCE",
+        "Allocation and risk-adjusted context",
+        "Observed paper state only. Recommendations are deterministic, "
+        "vetoable, and non-executable.",
+    )
+    snapshot = observation_snapshot or load_live_observation_status()
+    price = (
+        float(live_candles[-1]["close"])
+        if live_candles and live_candles[-1].get("close") is not None
+        else None
+    )
+    engine_available = snapshot.get("available") and not snapshot.get("store_error")
+    cash = snapshot.get("cash") if engine_available else None
+    position = snapshot.get("position", 0) if engine_available else None
+    if cash is None or price is None or not isinstance(position, (int, float)):
+        analysis = analyze_portfolio(cash=None, positions=[])
+    else:
+        analysis = analyze_portfolio(
+            cash=float(cash),
+            positions=[
+                {
+                    "symbol": "BTC/CAD",
+                    "quantity": float(position),
+                    "price": price,
+                    "asset_class": "crypto",
+                }
+            ],
+        )
+    if analysis.status == "UNAVAILABLE":
+        st.warning("Portfolio intelligence unavailable: " + " ".join(analysis.issues))
+        st.caption("No cash, allocation, or risk estimate has been fabricated.")
+        return
+    concentration = analysis.concentration
+    diversification = analysis.diversification
+    render_mc_metrics(
+        [
+            ("Portfolio status", analysis.status),
+            ("Marked portfolio value", f"${analysis.total_value:,.4f}"),
+            ("Cash allocation", f"{analysis.current_allocation.get('CASH', 0):.1%}"),
+            ("Invested allocation", f"{1 - analysis.current_allocation.get('CASH', 0):.1%}"),
+            ("Largest asset", f"{concentration['largest_asset']} · {concentration['largest_weight']:.1%}"),
+            ("Concentration", concentration["status"]),
+            ("Effective assets", f"{diversification['effective_assets']:.2f}"),
+            ("Risk-adjusted allocation", analysis.risk_adjusted_allocation["status"]),
+            ("Paper sizing ceiling", f"${analysis.position_sizing['max_position_value']:,.4f}"),
+            ("Stop risk at ceiling", f"${analysis.position_sizing['stop_risk_at_max']:,.4f}"),
+        ],
+        columns=2,
+    )
+    if concentration["breaches"]:
+        st.error("Concentration breach: " + " ".join(concentration["breaches"]))
+    allocation_rows = [
+        {"Asset": symbol, "Current": f"{weight:.1%}",
+         "Proposed": f"{analysis.proposed_allocation.get(symbol, 0):.1%}"
+         if analysis.proposed_allocation else "No target supplied"}
+        for symbol, weight in analysis.current_allocation.items()
+    ]
+    st.dataframe(allocation_rows, hide_index=True, width="stretch")
+    st.caption(analysis.position_sizing["explanation"])
+    for recommendation in analysis.recommendations:
+        st.info(recommendation)
+    if analysis.risk_adjusted_allocation["status"] == "UNAVAILABLE":
+        st.caption(
+            "Risk-adjusted ranking unavailable: expected return and volatility "
+            "estimates were not supplied by the observed paper state."
+        )
+    else:
+        st.caption(
+            "Risk-adjusted ranking uses caller-supplied expected return ÷ volatility; "
+            "it is evidence only and does not promote or execute trades."
+        )
+
+
 def render_mc_recent_trades_table(results):
     render_mc_section(
         "HISTORICAL BATCH BACKTEST",
@@ -3469,6 +4374,7 @@ def render_mc_recent_trades_table(results):
 def render_mc_strategy_page(results, latest_evaluation, live_candles):
     observation_snapshot = load_live_observation_status()
     render_mc_ai_decision(latest_evaluation, observation_snapshot)
+    render_mc_strategy_council(latest_evaluation, live_candles, observation_snapshot)
     render_mc_autonomous_portfolio_decision(
         results,
         latest_evaluation,
@@ -3606,6 +4512,7 @@ def render_mc_overview_navigation():
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+@st.fragment(run_every="45s")
 def render_mc_overview_market(market_data, live_candles):
     with st.container(key="overview_market"):
         if not live_candles:
@@ -3620,6 +4527,12 @@ def render_mc_overview_market(market_data, live_candles):
             [candle["close"] for candle in live_candles[-48:]],
             "BTC/CAD close",
             "KRAKEN PUBLIC DATA",
+        )
+        health = getattr(market_data, "health", {}) or {}
+        st.caption(
+            f"Source: {getattr(market_data, 'provider', None) or 'Kraken public API'} · "
+            f"freshness: {health.get('data_age_seconds', 'unknown')}s · "
+            "read-only public candles"
         )
         st.markdown(
             '<a class="overview-market-chart-link" href="?section=MARKET" '
@@ -3705,34 +4618,71 @@ def render_mc_overview_page(
     )
     st.markdown(
         f"""
-        <main class="orbit-overview">
-          <header class="orbit-shell">
-            <div class="orbit-brand">
-              <img src="/app/static/kova/kova-ai-avatar-192.png" alt="Kova Orb">
-              <div><div class="orbit-brand-name">Kova</div>
-              <div class="orbit-brand-subtitle">Orbit Summary · paper operations</div></div>
+         <main class="orbit-shell orbit-overview vision-overview">
+          <header class="vision-page-head">
+            <div>
+              <div class="vision-breadcrumb">Home <span>/</span> <strong>Overview</strong></div>
+              <h1 class="vision-page-title">General Operations</h1>
             </div>
-              <div class="orbit-shell-meta"><span>BTC/CAD</span></div>
+            <div class="vision-page-meta">Kova Orbit · BTC/CAD · paper only</div>
           </header>
-          <section class="orbit-hero">
-            <article class="orbit-panel orbit-observation-card">
-              <div class="orbit-eyebrow">Observation status</div>
-              <h1>Paper operations progress</h1>
-              <p>Genuine paper-observation evidence is tracked here; public market display data and historical simulations remain separate.</p>
-              <div class="orbit-mission-footer">
+          <section class="vision-kpi-grid" aria-label="Kova operational statistics">
+            <article class="vision-kpi" style="--vision-accent:#01befe;--vision-glow:rgba(1,190,254,.26)">
+              <div class="vision-kpi-label">Paper balance</div>
+              <div class="vision-kpi-value">${snapshot.get('cash', 0):,.2f}</div>
+              <div class="vision-kpi-detail">Genuine observation</div>
+            </article>
+            <article class="vision-kpi" style="--vision-accent:#7551ff;--vision-glow:rgba(117,81,255,.3)">
+              <div class="vision-kpi-label">Completed trades</div>
+              <div class="vision-kpi-value">{snapshot.get('trades', 0)} / {criteria['min_completed_trades']}</div>
+              <div class="vision-kpi-detail neutral">Evidence requirement</div>
+            </article>
+            <article class="vision-kpi" style="--vision-accent:#ee62d0;--vision-glow:rgba(238,98,208,.27)">
+              <div class="vision-kpi-label">Current decision</div>
+              <div class="vision-kpi-value">{escape(_observed_paper_decision(snapshot)[0])}</div>
+              <div class="vision-kpi-detail neutral">Read-only paper signal</div>
+            </article>
+            <article class="vision-kpi" style="--vision-accent:#01b574;--vision-glow:rgba(1,181,116,.25)">
+              <div class="vision-kpi-label">Data health</div>
+              <div class="vision-kpi-value">{snapshot.get('healthy_ratio', 0) * 100:.1f}%</div>
+              <div class="vision-kpi-detail">Healthy cycles</div>
+            </article>
+          </section>
+          <section class="vision-primary-grid">
+            <article class="orbit-observation-card orbit-panel vision-card vision-observation">
+              <span class="vision-sr-only">Paper operations progress</span>
+              <div class="vision-observation-copy">
+                <div class="orbit-eyebrow">Observation status</div>
+                <h2>Observe. Validate.<br>Stay disciplined.</h2>
+                <div class="vision-card-note">Genuine paper-observation evidence leads this view. Public market display data and historical simulations remain separate from the mission record.</div>
                 <span class="orbit-state"><i class="orbit-state-dot"></i>{escape(observation_state)}</span>
               </div>
+              <div class="vision-observation-orb">
+                <img src="/app/static/kova/kova-ai-avatar-192.png" alt="Kova Orb">
+              </div>
             </article>
-            <div class="orbit-side-stack">
-              <article class="orbit-panel">
-                <div class="orbit-panel-title">Observation progress <b>{snapshot.get('trades', 0)} / {criteria['min_completed_trades']} trades</b></div>
-                <div class="orbit-big-value">{snapshot.get('observation_days', 0):.2f} days</div>
-                <div class="orbit-panel-note">Minimum {criteria['min_observation_days']} days · {snapshot.get('healthy_ratio', 0) * 100:.1f}% healthy data</div>
+            <article class="orbit-panel vision-card">
+              <div class="vision-card-title">Observation progress</div>
+              <div class="vision-card-note">Minimum {criteria['min_observation_days']} days · {snapshot.get('healthy_ratio', 0) * 100:.1f}% healthy data</div>
+              <div class="orbit-big-value">{snapshot.get('observation_days', 0):.2f} days</div>
+              <div class="vision-progress-row">
                 <div class="orbit-progress"><span style="width:{days_progress:.1f}%"></span></div>
-              </article>
-            </div>
+                <div class="vision-progress-label">{snapshot.get('trades', 0)} / {criteria['min_completed_trades']}</div>
+              </div>
+            </article>
           </section>
-        </main>
+          <section class="vision-secondary-grid">
+            <article class="orbit-panel vision-card">
+              <div class="vision-card-title">BTC/CAD market display</div>
+              <div class="vision-card-note">Public Kraken candles only · no order endpoint</div>
+            </article>
+            <article class="orbit-panel vision-card">
+              <div class="vision-card-title">Recent activity</div>
+              <div class="vision-card-note">{escape(activity_text)}</div>
+              <div class="vision-card-note" style="margin-top:.55rem">Evidence progress · {trade_progress:.0f}%</div>
+            </article>
+          </section>
+         </main>
         """,
         unsafe_allow_html=True,
     )
@@ -4033,19 +4983,42 @@ def render_mc_options_review(candidates=None):
                 )
             continue
         analysis = item["analysis"]
+        quote = analysis.get("quote_metadata") or {}
+        dte = analysis["days_to_expiration"]
+        liquidity = (
+            f"Vol {quote['volume']:,.0f} · OI {quote['open_interest']:,.0f}"
+            if quote.get("volume") is not None and quote.get("open_interest") is not None
+            else "Unavailable"
+        )
+        expiration_warning = (
+            "EXPIRING SOON · review lifecycle risk"
+            if dte < 7
+            else "NORMAL"
+        )
         with st.container(border=True):
             st.markdown(f"#### {item['instrument']} · {analysis['strategy']}")
             render_mc_metrics(
                 [
                     ("Quote status", "NORMALIZED / FRESH"),
                     ("Strategy", analysis["strategy"]),
+                    ("Bid / ask", (
+                        f"${quote['bid']:,.2f} / ${quote['ask']:,.2f}"
+                        if quote.get("bid") is not None else "Unavailable"
+                    )),
+                    ("Midpoint", _format_option_price(quote.get("mid"))),
+                    ("IV", _format_option_percent(quote.get("implied_volatility"))),
+                    ("Delta / gamma", _format_option_pair(quote, "delta", "gamma")),
+                    ("Theta / vega", _format_option_pair(quote, "theta", "vega")),
+                    ("Liquidity", liquidity),
                     ("Break-even", _format_option_price(analysis["break_even"])),
                     ("Maximum profit", _format_option_money(analysis["maximum_profit"])),
                     ("Maximum loss", _format_option_money(analysis["maximum_loss"])),
                     ("Exposure", _format_option_money(analysis["exposure"])),
                     ("Cost", _format_option_money(analysis["cost"])),
                     ("Slippage", _format_option_money(analysis["slippage"])),
-                    ("Days to expiration", str(analysis["days_to_expiration"])),
+                    ("DTE", str(dte)),
+                    ("Expiration risk", expiration_warning),
+                    ("Observed at", quote.get("observed_at", "Unavailable")),
                 ],
                 columns=3,
             )
@@ -4061,6 +5034,16 @@ def _format_option_money(value):
 
 def _format_option_price(value):
     return "N/A" if value is None else f"${value:,.2f}"
+
+
+def _format_option_percent(value):
+    return "Unavailable" if value is None else f"{value:.2%}"
+
+
+def _format_option_pair(values, first, second):
+    if values.get(first) is None or values.get(second) is None:
+        return "Unavailable"
+    return f"{values[first]:+.4f} / {values[second]:+.4f}"
 
 
 def render_mc_research_catalogue():
@@ -4563,6 +5546,7 @@ def render_dashboard():
     latest_evaluation = results["evaluation_history"][-1]
 
     market_data, live_candles = load_kraken_market_data()
+    market_comparison = load_market_provider_comparison(market_data)
 
     real_market_results = run_live_market_backtest(live_candles)
     historical_market_data, historical_candles = (
@@ -4605,6 +5589,7 @@ def render_dashboard():
         render_mc_strategy_page(results, latest_evaluation, live_candles)
     elif selected_section == "POSITIONS":
         render_mc_position_snapshot(results, latest_evaluation, live_candles)
+        render_mc_portfolio_intelligence(live_candles)
         render_mc_recent_trades_table(results)
     elif selected_section == "PERFORMANCE":
         render_mc_performance_page(results)
@@ -4614,6 +5599,7 @@ def render_dashboard():
             live_candles,
             load_live_observation_status(),
         )
+        render_mc_portfolio_intelligence(live_candles)
     elif selected_section == "OPTIONS REVIEW":
         render_mc_options_review()
     elif selected_section == "MARKET":
@@ -4638,7 +5624,9 @@ def render_dashboard():
             market_data=market_data,
             historical_results=historical_market_results,
             historical_market_data=historical_market_data,
+            market_comparison=market_comparison,
         )
+        render_mc_testing_center(market_data, live_candles)
     elif selected_section == "SETTINGS":
         render_mc_settings_page(
             results,

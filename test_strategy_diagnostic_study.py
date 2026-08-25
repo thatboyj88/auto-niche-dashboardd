@@ -259,6 +259,18 @@ class StrategyDiagnosticStudyTests(unittest.TestCase):
             call.args[0]["ok"]
             for call in notifier.call_args_list
         ))
+        self.assertEqual(
+            result["decision_consistency"]["repeatable_cases"],
+            result["decision_consistency"]["case_count"],
+        )
+        self.assertEqual(
+            result["decision_consistency"]["non_repeatable_cases"],
+            0,
+        )
+        self.assertIn(
+            "PASS",
+            result["decision_consistency"]["conclusion"],
+        )
 
         expected_returns = []
         for start_index in range(0, len(source_candles), 365):

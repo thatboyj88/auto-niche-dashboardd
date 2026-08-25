@@ -198,6 +198,7 @@ def build_assistant_context(
     live_candles,
     historical_results,
     account_status=None,
+    council_context=None,
 ):
     context = {
         "status": get_status_context(results, live_candles, historical_results),
@@ -208,6 +209,7 @@ def build_assistant_context(
         "risk": get_risk_context(),
         "configuration": get_configuration_context(),
         "research": get_research_context(historical_results),
+        "strategy_council": get_position_context(council_context),
     }
     return _serializable(context)
 
@@ -361,6 +363,47 @@ class ReadOnlySummaryProvider:
                 "FACT\n\n"
                 f"Research status: {research['status']}\n"
                 f"Completed periods: {research.get('completed_periods', UNKNOWN)}"
+            )
+        elif "decision" in lowered and any(
+            phrase in lowered
+            for phrase in ("current", "now", "today", "what is your")
+        ):
+            strategy = context["strategy"]
+            council = context.get("strategy_council", {})
+            governor = council.get("governor", {}) if isinstance(council, dict) else {}
+            action = council.get("final_action", strategy.get("latest_decision", UNKNOWN))
+            answer = (
+                "FACT\n\n"
+                f"Current paper decision: {action}\n"
+                f"Strategy signal: {strategy.get('latest_decision', UNKNOWN)}\n"
+                f"Strategy score: {strategy.get('latest_score', UNKNOWN)}\n"
+                f"Risk Governor approval: {governor.get('approved', UNKNOWN)}\n"
+                "This is paper-only and read-only."
+            )
+        elif "why" in lowered or "evidence" in lowered:
+            market = context["market"]
+            strategy = context["strategy"]
+            council = context.get("strategy_council", {})
+            governor = council.get("governor", {}) if isinstance(council, dict) else {}
+            answer = (
+                "ANALYSIS\n\n"
+                f"Evidence: {market.get('source', UNKNOWN)} reported close "
+                f"{market.get('latest_close', UNKNOWN)} at "
+                f"{market.get('latest_timestamp', UNKNOWN)}. "
+                f"The strategy score is {strategy.get('latest_score', UNKNOWN)} "
+                f"with signal {strategy.get('latest_decision', UNKNOWN)}. "
+                f"Risk Governor approval is {governor.get('approved', UNKNOWN)}. "
+                "Uncertainty remains if market data is stale, incomplete, or "
+                "the observation sample is insufficient."
+            )
+        elif "change" in lowered and "decision" in lowered:
+            answer = (
+                "ANALYSIS\n\n"
+                "The paper decision would change when a fresh, healthy market "
+                "snapshot produces a different qualifying strategy signal, or "
+                "when the Risk Governor changes its approval. A stale, missing, "
+                "or contradictory provider snapshot keeps the decision "
+                "fail-closed. No live order can result."
             )
         elif "market" in lowered or "price" in lowered:
             market = context["market"]
