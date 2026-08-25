@@ -149,7 +149,7 @@ jobs:
           ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-diffs
         run: >
           uv run python -m unittest
-          test_dashboard_options_browser.DashboardOptionsBrowserTests.test_cached_quotes_refresh_once_and_keep_provider_state_visible
+          test_dashboard_options_browser.DashboardOptionsBrowserTests.test_cached_quotes_refresh_after_expiry_and_keep_provider_state_visible
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_snapshots_protect_responsive_composition
       - name: Upload focused Orbit Summary diffs
         if: ${{ failure() && hashFiles('artifacts/orbit-summary-diffs/**') != '' }}
