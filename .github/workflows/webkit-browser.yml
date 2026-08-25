@@ -113,8 +113,8 @@ jobs:
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_mobile_snapshot_protects_safari_composition
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_portrait_tablet_snapshot_protects_safari_composition
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_landscape_tablet_snapshot_protects_safari_composition
-           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_desktop_zoom_snapshots_protect_wrapping
-       - name: Upload WebKit failure screenshot
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_desktop_zoom_snapshots_protect_wrapping
+      - name: Upload WebKit failure screenshot
         if: ${{ failure() && hashFiles('artifacts/webkit-failure/iphone-chart-regression.png') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
