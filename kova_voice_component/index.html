@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root { --cyan: #00d9ff; --blue: #145cff; --violet: #c43cff; --ink: #020512; }
+    * { box-sizing: border-box; }
+    html, body, .assistant {
+      margin: 0; min-height: 1px; background: transparent !important;
+      background-color: transparent !important;
+    }
+    body { overflow: visible; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .assistant { display: grid; place-items: center; min-height: 1px; padding: 12px; }
+    .orb-button {
+      appearance: none; border: 0; border-radius: 50%; cursor: pointer; height: 82px;
+      outline: none; padding: 0; position: relative; width: 82px;
+      background:
+        radial-gradient(circle at 33% 24%, rgba(255,255,255,.88) 0 3%, transparent 13%),
+        radial-gradient(circle at 38% 34%, #163a88 0 12%, #071447 31%, #040821 62%, var(--ink) 100%);
+      box-shadow: 0 0 0 1px rgba(0,217,255,.92), 0 0 0 8px rgba(20,92,255,.12),
+        0 0 25px rgba(0,160,255,.58), inset -12px -15px 22px rgba(1,2,12,.94),
+        inset 10px 8px 20px rgba(154,232,255,.28);
+      isolation: isolate; transition: transform .25s ease, box-shadow .3s ease;
+    }
+    .orb-button::before, .orb-button::after {
+      content: ""; position: absolute; border-radius: 50%; pointer-events: none;
+    }
+    .orb-button::before {
+      inset: -9px; border: 1px solid rgba(141,247,255,.48);
+      border-left-color: transparent; border-bottom-color: rgba(167,139,250,.75);
+      animation: orbit 9s linear infinite;
+    }
+    .orb-button::after {
+      inset: 12px; border: 1px solid rgba(255,255,255,.2);
+      box-shadow: inset 0 0 13px rgba(0,217,255,.45), 0 0 16px rgba(196,60,255,.34);
+    }
+    .orb-button:hover, .orb-button:focus-visible { transform: scale(1.05); }
+    .orb-button:focus-visible { box-shadow: 0 0 0 4px #08102a, 0 0 0 7px white, 0 0 32px rgba(141,247,255,.9); }
+    [data-appearance="Light"] .orb-button:focus-visible {
+      box-shadow: 0 0 0 4px #ffffff, 0 0 0 7px #145cff, 0 0 32px rgba(20,92,255,.7);
+    }
+    .orb-core {
+      position: absolute; inset: 24%; border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #fff 0 4%, #b8faff 15%, #168cff 42%, #852cff 62%, transparent 74%);
+      filter: blur(.2px); animation: core-breathe 4.8s ease-in-out infinite;
+    }
+    .orb-sheen {
+      position: absolute; inset: 3px; border-radius: 50%;
+      background: linear-gradient(125deg, rgba(0,217,255,.28), rgba(255,255,255,.18) 22%, transparent 42% 68%, rgba(196,60,255,.3));
+      mix-blend-mode: screen; pointer-events: none;
+    }
+    .state-listening .orb-button { animation: listen 1.2s ease-in-out infinite; }
+    .state-thinking .orb-button { animation: think 2.3s ease-in-out infinite; }
+    .state-speaking .orb-button { animation: speak .78s ease-in-out infinite; }
+    .state-listening .orb-core { animation: core-listen 1s ease-in-out infinite; }
+    .state-thinking .orb-core { animation: core-think 1.6s linear infinite; }
+    .state-speaking .orb-core { animation: core-speak .52s ease-in-out infinite; }
+    @keyframes orbit { to { transform: rotate(360deg); } }
+    @keyframes core-breathe { 0%,100% { transform: scale(.82); opacity: .78; } 50% { transform: scale(1.08); opacity: 1; } }
+    @keyframes listen { 0%,100% { transform: scale(1); box-shadow: 0 0 0 1px rgba(141,247,255,.92), 0 0 0 8px rgba(92,219,255,.09), 0 0 25px rgba(75,205,255,.52), inset -12px -15px 22px rgba(4,7,26,.9), inset 10px 8px 20px rgba(220,255,255,.34); } 50% { transform: scale(1.06); box-shadow: 0 0 0 1px #fff, 0 0 0 15px rgba(92,219,255,.18), 0 0 50px rgba(75,225,255,.9), inset -12px -15px 22px rgba(4,7,26,.75), inset 10px 8px 24px rgba(220,255,255,.5); } }
+    @keyframes think { 0%,100% { filter: hue-rotate(0deg) saturate(1); } 50% { filter: hue-rotate(38deg) saturate(1.3) brightness(1.13); } }
+    @keyframes speak { 0%,100% { transform: scale(.98); } 50% { transform: scale(1.09); } }
+    @keyframes core-listen { 50% { transform: scale(1.35); opacity: 1; } }
+    @keyframes core-think { to { transform: rotate(360deg) scale(1.1); } }
+    @keyframes core-speak { 50% { transform: scale(1.5); filter: blur(1px); } }
+    .sr-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    @media (max-width: 600px) {
+      .assistant { padding: 8px; }
+      .orb-button { height: 62px; width: 62px; }
+      .orb-button::before { inset: -7px; }
+      .orb-button::after { inset: 9px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .orb-button, .orb-button::before, .orb-core { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="assistant state-idle" id="assistant">
+    <button class="orb-button" id="orb" aria-label="KOVA voice assistant. Tap to activate; double tap for microphone." title="KOVA voice assistant">
+      <span class="orb-core" aria-hidden="true"></span><span class="orb-sheen" aria-hidden="true"></span>
+    </button>
+    <div class="sr-status" id="status" aria-live="polite">IDLE</div>
+  </main>
+  <script>
+    const parentWindow = window.parent;
+    const root = document.getElementById("assistant");
+    const orb = document.getElementById("orb");
+    const status = document.getElementById("status");
+    let recognition = null, lastTap = 0, lastResponseId = null, voiceState = "idle";
+
+    function resizeFrame() {
+      if (!window.frameElement) return;
+       window.frameElement.setAttribute("allowtransparency", "true");
+       window.frameElement.allowTransparency = true;
+      let orbitPage = false;
+      try { orbitPage = Boolean(parentWindow.document.querySelector(".orbit-overview")); } catch {}
+      const mobile = window.innerWidth <= 600;
+      window.frameElement.style.position = "fixed";
+      window.frameElement.style.right = "max(10px, env(safe-area-inset-right))";
+      window.frameElement.style.width = mobile ? "86px" : "112px";
+      window.frameElement.style.height = mobile ? "86px" : "112px";
+      window.frameElement.style.top = orbitPage ? "auto" : "max(92px, env(safe-area-inset-top) + 84px)";
+      window.frameElement.style.bottom = orbitPage ? "max(10px, env(safe-area-inset-bottom))" : "auto";
+      window.frameElement.style.zIndex = "1000";
+      window.frameElement.style.border = "0";
+      window.frameElement.style.background = "transparent";
+      window.frameElement.style.overflow = "visible";
+    }
+    function setState(next, message) {
+      voiceState = next; root.className = `assistant state-${next}`;
+      status.textContent = next.toUpperCase();
+      status.setAttribute("aria-label", message || next.toUpperCase());
+      resizeFrame();
+    }
+    function stopSpeech() {
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      if (voiceState === "speaking") setState("idle", "Speech interrupted.");
+    }
+    function chooseVoice() {
+      if (!("speechSynthesis" in window)) return null;
+      const voices = window.speechSynthesis.getVoices();
+      return voices.find(v => /en[-_]GB/i.test(v.lang) && /male|daniel|george|arthur|oliver|ryan/i.test(v.name))
+        || voices.find(v => /en[-_]GB/i.test(v.lang)) || null;
+    }
+    function speak(text, id) {
+      if (!text || !("speechSynthesis" in window)) { setState("idle", "Voice playback unavailable."); return; }
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text), voice = chooseVoice();
+      if (voice) utterance.voice = voice;
+      utterance.lang = voice?.lang || "en-GB"; utterance.rate = .94; utterance.pitch = .96;
+      utterance.onstart = () => setState("speaking", "KOVA is speaking.");
+      utterance.onend = () => setState("idle", "Ready.");
+      utterance.onerror = () => setState("idle", "Voice playback unavailable.");
+      lastResponseId = id; setState("speaking", "KOVA is speaking."); window.speechSynthesis.speak(utterance);
+    }
+    function send(value) {
+      parentWindow.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value }, "*");
+    }
+    function startListening() {
+      stopSpeech();
+      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!Recognition) { setState("idle", "Microphone speech recognition is unavailable."); return; }
+      if (recognition) recognition.abort();
+      recognition = new Recognition(); recognition.lang = "en-GB"; recognition.continuous = false; recognition.interimResults = false;
+      recognition.onstart = () => setState("listening", "Listening.");
+      recognition.onerror = event => setState("idle", event.error === "not-allowed" ? "Microphone permission is blocked." : "Microphone unavailable.");
+      recognition.onresult = event => {
+        const text = Array.from(event.results).map(result => result[0].transcript).join(" ").trim();
+        if (text) { setState("thinking", "Thinking."); send({ type: "user_message", id: `${Date.now()}-${text}`, text }); }
+      };
+      recognition.onend = () => { if (voiceState === "listening") setState("idle", "Ready."); };
+      try { recognition.start(); } catch { setState("idle", "Microphone is already active."); }
+    }
+    function toggleListening() {
+      if (voiceState === "listening") { recognition?.stop(); setState("idle", "Listening stopped."); } else startListening();
+    }
+    orb.addEventListener("click", () => {
+      const now = Date.now(); if (now - lastTap < 420) toggleListening(); lastTap = now;
+    });
+    function handleKeydown(event) {
+      const target = event.target;
+      const editing = target && target.closest?.("input,textarea,select,button,[contenteditable='true'],[role='button']");
+      if (!editing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+        event.preventDefault(); toggleListening();
+      }
+    }
+    document.addEventListener("keydown", handleKeydown);
+    if (parentWindow !== window) { try { parentWindow.addEventListener("keydown", handleKeydown); } catch {} }
+    window.addEventListener("message", event => {
+      if (!event.data || event.data.type !== "streamlit:render") return;
+      const appearance = event.data.args?.appearance;
+      if (appearance) root.dataset.appearance = appearance;
+      const response = event.data.args?.response;
+      if (response?.id && response.id !== lastResponseId) speak(response.text || "", response.id);
+      resizeFrame();
+    });
+    parentWindow.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+    resizeFrame();
+  </script>
+</body>
+</html>

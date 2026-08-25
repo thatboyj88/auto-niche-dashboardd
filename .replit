@@ -1,0 +1,122 @@
+modules = ["nodejs-24", "python-base-3.13"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "AI Trading Dashboard"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "release-checks"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "V2 Genuine Paper Observation"
+
+[[workflows.workflow]]
+name = "AI Trading Dashboard"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uv run streamlit run dashboard.py --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableWebsocketCompression false --server.port 5000 --browser.gatherUsageStats false"
+waitForPort = 5000
+
+[[workflows.workflow]]
+name = "yahoo-btc-cad-data"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+# Validates the fixed Yahoo BTC/CAD evidence period and alerts maintainers
+# through BTC_CAD_PREFLIGHT_SLACK_WEBHOOK_URL on either pass or failure.
+args = "uv run python btc_cad_preflight.py"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "offline-study-reports"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uv run python -m offline_study_report_check"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "offline-report-coverage"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uv run python -m offline_study_report_check"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "release-checks"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uv run python release_check.py --allow-missing-published-url"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "V2 Genuine Paper Observation"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "OBSERVATION_MIN_COMPLETED_TRADES=20 OBSERVATION_MIN_DAYS=7 OBSERVATION_MAX_DAYS=14 OBSERVATION_MIN_HEALTHY_RATIO=0.95 OBSERVATION_POLL_SECONDS=300 OBSERVATION_STALE_AFTER_SECONDS=900 uv run python paper_observation_runner.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[[ports]]
+localPort = 5000
+externalPort = 5000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[nix]
+channel = "stable-25_05"
+packages = ["gitFull", "playwright-driver", "chromium"]
