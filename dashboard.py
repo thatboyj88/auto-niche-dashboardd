@@ -2038,6 +2038,21 @@ def inject_mission_control_theme(appearance="Dark"):
         .mc-chart-header { align-items: flex-start; display: flex; justify-content: space-between; margin-bottom: .55rem; }
         .mc-chart-title { color: var(--mc-text); font-size: .96rem; font-weight: 700; letter-spacing: -.02em; }
         .mc-chart-note { color: var(--mc-muted); font-size: .70rem; margin-top: .18rem; }
+        .mc-chart-legend {
+            align-items: center;
+            color: var(--mc-muted);
+            display: flex;
+            font-size: .68rem;
+            gap: .35rem;
+            margin-top: .35rem;
+        }
+        .mc-chart-legend-swatch {
+            background: #7551ff;
+            border-radius: 999px;
+            display: inline-block;
+            height: .45rem;
+            width: .45rem;
+        }
         .mc-chart-badge {
             background: rgba(1, 181, 116, .12);
             border-radius: 7px;
@@ -3002,7 +3017,9 @@ def render_mc_line_chart(title, caption, values, series_label, badge="LIVE DATA"
     st.markdown(
         f'<div class="mc-chart-card"><div class="mc-chart-header"><div>'
         f'<div class="mc-chart-title">{escape(title)}</div>'
-        f'<div class="mc-chart-note">{escape(caption)}</div></div>'
+        f'<div class="mc-chart-note">{escape(caption)}</div>'
+        f'<div class="mc-chart-legend" aria-label="Chart legend">'
+        f'<span class="mc-chart-legend-swatch"></span>{escape(series_label)}</div></div>'
         f'<span class="mc-chart-badge">{escape(badge)}</span></div>'
         f'<svg class="mc-chart-svg" viewBox="0 0 {chart_width} {chart_height}" '
         f'role="img" aria-label="{escape(series_label)} chart">'
@@ -3059,7 +3076,9 @@ def render_mc_bar_chart(
     st.markdown(
         f'<div class="mc-chart-card"><div class="mc-chart-header"><div>'
         f'<div class="mc-chart-title">{escape(title)}</div>'
-        f'<div class="mc-chart-note">{escape(caption)}</div></div>'
+        f'<div class="mc-chart-note">{escape(caption)}</div>'
+        f'<div class="mc-chart-legend" aria-label="Chart legend">'
+        f'<span class="mc-chart-legend-swatch"></span>{escape(series_label)}</div></div>'
         f'<span class="mc-chart-badge">{escape(badge)}</span></div>'
         f'<svg class="mc-chart-svg" viewBox="0 0 {chart_width} {chart_height}" '
         f'role="img" aria-label="{escape(series_label)} bar chart">'
