@@ -1945,6 +1945,15 @@ class DashboardAssistantBrowserTests(unittest.TestCase):
                                 state="visible",
                                 timeout=20000,
                             )
+                            page.wait_for_function(
+                                """() => Promise.all([
+                                    document.fonts.ready,
+                                    ...Array.from(document.images).map(image =>
+                                        image.complete && image.naturalWidth > 0
+                                    )
+                                ]).then(results => results.slice(1).every(Boolean))""",
+                                timeout=20000,
+                            )
                             self.assertEqual(
                                 page.locator('[data-testid="stSidebar"]').count(),
                                 0,
