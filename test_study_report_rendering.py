@@ -238,6 +238,7 @@ class StudyReportRenderingTests(unittest.TestCase):
         self.assertIn("=== Period coverage ===", report)
         self.assertIn("=== Cost sensitivity ===", report)
         self.assertIn("=== Final diagnosis ===", report)
+        self.assertIn("Decision consistency unavailable", report)
 
     def test_trade_economics_report_has_final_verdict(self):
         result = {

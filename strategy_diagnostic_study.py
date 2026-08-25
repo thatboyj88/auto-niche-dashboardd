@@ -705,14 +705,20 @@ def print_report(results):
     for note in diagnosis["insufficient_evidence"]:
         print(f"- Insufficient evidence: {note}")
 
-    consistency = results["decision_consistency"]
     print("\n=== Decision consistency ===")
-    print(
-        f"{consistency['repeatable_cases']}/"
-        f"{consistency['case_count']} cases repeat exactly "
-        f"({consistency['repeatability_percent']:.2f}%)."
-    )
-    print(consistency["conclusion"])
+    consistency = results.get("decision_consistency")
+    if consistency is None:
+        print(
+            "Decision consistency unavailable: this result does not include "
+            "the required comparison evidence."
+        )
+    else:
+        print(
+            f"{consistency['repeatable_cases']}/"
+            f"{consistency['case_count']} cases repeat exactly "
+            f"({consistency['repeatability_percent']:.2f}%)."
+        )
+        print(consistency["conclusion"])
 
 
 def main():
