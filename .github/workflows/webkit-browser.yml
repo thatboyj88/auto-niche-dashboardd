@@ -1,0 +1,244 @@
+name: WebKit browser regression
+
+on:
+  push:
+  pull_request:
+  # Run the hosted WebKit and Firefox Orbit Summary snapshots weekly so
+  # browser/runtime drift is detected without adding a per-commit check.
+  schedule:
+    - cron: "23 5 * * 1" # Mondays at 05:23 UTC
+  workflow_dispatch:
+    inputs:
+      published_dashboard_url:
+        description: "Published dashboard URL for hosted PWA asset validation"
+        required: false
+        type: string
+
+jobs:
+  workflow-lint:
+    name: Validate workflow configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Lint all workflow files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' workflows < <(
+            find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) \
+              -print0 | sort -z
+          )
+          if (( ${#workflows[@]} == 0 )); then
+            echo "No YAML workflows found under .github/workflows/" >&2
+            exit 1
+          fi
+          for workflow in "${workflows[@]}"; do
+            echo "::group::Lint ${workflow}"
+            docker run --rm \
+              -v "${GITHUB_WORKSPACE}:/repo:ro" \
+              rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 \
+              "/repo/${workflow#./}"
+            echo "::endgroup::"
+          done
+
+  release-gate:
+    name: Release gate
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # A manually supplied URL takes precedence over the repository variable.
+      # The gate still validates hosted assets whenever this value is present.
+      PUBLISHED_DASHBOARD_URL: ${{ inputs.published_dashboard_url || vars.PUBLISHED_DASHBOARD_URL }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          # Reviewed uv release; update deliberately with the release tool review.
+          version: 0.9.24
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+      - name: Install Python dependencies
+        run: uv sync
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test scheduled drift notification contract
+        run: uv run python -m unittest test_observation_notifications
+      - name: Run release gate
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run python release_check.py \
+            --json \
+            --allow-missing-published-url \
+            | tee release-check.json
+      - name: Upload release gate report
+        if: ${{ always() && hashFiles('release-check.json') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-check-report
+          path: release-check.json
+          if-no-files-found: error
+
+  webkit-dashboard:
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          # Reviewed uv release; update deliberately with the release tool review.
+          version: 0.9.24
+      - name: Install Python dependencies
+        run: uv sync
+      - name: Validate visual baseline inventory
+        run: uv run python -m visual_baseline_inventory
+      - name: Install Playwright WebKit and runtime dependencies
+        run: uv run playwright install --with-deps webkit
+      - name: Run iPhone WebKit chart regression
+        env:
+          RUN_WEBKIT_BROWSER_TESTS: "1"
+          WEBKIT_FAILURE_SCREENSHOT_PATH: "artifacts/webkit-failure/iphone-chart-regression.png"
+          ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-diffs
+        run: >
+          uv run python -m unittest
+          test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_iphone_chart_details_are_readable
+          test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_chart_failure_captures_configured_diagnostic_screenshot
+          test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_navigation_failure_captures_configured_diagnostic_screenshot
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_mobile_snapshot_protects_safari_composition
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_portrait_tablet_snapshot_protects_safari_composition
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_landscape_tablet_snapshot_protects_safari_composition
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_desktop_zoom_snapshots_protect_wrapping
+      - name: Upload WebKit failure screenshot
+        if: ${{ failure() && hashFiles('artifacts/webkit-failure/iphone-chart-regression.png') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: webkit-chart-regression-failure
+          path: artifacts/webkit-failure
+          if-no-files-found: error
+      - name: Upload focused WebKit Orbit Summary diffs
+        if: ${{ failure() && hashFiles('artifacts/orbit-summary-diffs/**') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: webkit-orbit-summary-visual-diffs
+          path: artifacts/orbit-summary-diffs
+          if-no-files-found: error
+
+  orbit-visual-regression:
+    name: Compare Orbit Summary visual baselines
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          # Reviewed uv release; update deliberately with the release tool review.
+          version: 0.9.24
+      - name: Install Python dependencies
+        run: uv sync
+      - name: Install Chromium and runtime dependencies
+        run: uv run playwright install --with-deps chromium
+      - name: Compare approved responsive screenshots
+        env:
+          ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-diffs
+        run: >
+          uv run python -m unittest
+          test_dashboard_options_browser.DashboardOptionsBrowserTests.test_cached_quotes_refresh_once_and_keep_provider_state_visible
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_snapshots_protect_responsive_composition
+      - name: Upload focused Orbit Summary diffs
+        if: ${{ failure() && hashFiles('artifacts/orbit-summary-diffs/**') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orbit-summary-visual-diffs
+          path: artifacts/orbit-summary-diffs
+          if-no-files-found: error
+
+  firefox-orbit-visual-regression:
+    name: Compare Firefox Orbit Summary baselines
+    needs: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          # Reviewed uv release; update deliberately with the release tool review.
+          version: 0.9.24
+      - name: Install Python dependencies
+        run: uv sync
+      - name: Install Firefox and runtime dependencies
+        run: uv run playwright install --with-deps firefox
+      - name: Compare approved Firefox screenshots
+        env:
+          RUN_FIREFOX_BROWSER_TESTS: "1"
+          ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-firefox-diffs
+        run: >
+          uv run python -m unittest
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_mobile_snapshot_protects_firefox_composition
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_desktop_snapshot_protects_firefox_typography
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_desktop_zoom_snapshots_protect_wrapping
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_landscape_tablet_snapshot_protects_responsive_composition
+          test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_portrait_tablet_snapshot_protects_responsive_composition
+      - name: Upload focused Firefox Orbit Summary diff
+        if: ${{ failure() && hashFiles('artifacts/orbit-summary-firefox-diffs/**') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: firefox-orbit-summary-visual-diff
+          path: artifacts/orbit-summary-firefox-diffs
+          if-no-files-found: error
+
+  scheduled-browser-drift-notification:
+    name: Notify scheduled browser drift failure
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'schedule' &&
+        (
+          needs.workflow-lint.result == 'failure' ||
+          needs.release-gate.result == 'failure' ||
+          needs.webkit-dashboard.result == 'failure' ||
+          needs.orbit-visual-regression.result == 'failure' ||
+          needs.firefox-orbit-visual-regression.result == 'failure'
+        )
+      }}
+    needs:
+      - workflow-lint
+      - release-gate
+      - webkit-dashboard
+      - orbit-visual-regression
+      - firefox-orbit-visual-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Send scheduled drift alert
+        env:
+          BTC_CAD_PREFLIGHT_SLACK_WEBHOOK_URL: ${{ secrets.BTC_CAD_PREFLIGHT_SLACK_WEBHOOK_URL }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_ARTIFACTS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
+        run: |
+          python - <<'PY'
+          import os
+          from observation_notifications import (
+              BROWSER_DRIFT_FAILURE_EVENT,
+              ObservationNotifier,
+          )
+
+          delivered = ObservationNotifier().notify(
+              BROWSER_DRIFT_FAILURE_EVENT,
+              {
+                  "run_url": os.environ["GITHUB_RUN_URL"],
+                  "artifacts_url": os.environ["GITHUB_ARTIFACTS_URL"],
+              },
+          )
+          if not delivered:
+              raise SystemExit("Scheduled browser drift alert could not be delivered")
+          PY
