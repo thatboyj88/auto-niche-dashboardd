@@ -1,0 +1,248 @@
+name: KOVA Hosted Browser Runner
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kova-hosted-browser-runner-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  runner-smoke:
+    name: Hosted Runner Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify runner allocation and checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner: ${RUNNER_NAME}"
+          echo "OS: ${RUNNER_OS}"
+          echo "Architecture: ${RUNNER_ARCH}"
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Ref: ${GITHUB_REF}"
+          echo "SHA: ${GITHUB_SHA}"
+          command -v python
+          command -v git
+          command -v curl
+          test -f dashboard.py
+          test -f pyproject.toml
+          test -f test_dashboard_ai_operations_assistant.py
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+      - name: Upload runner smoke evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-runner-smoke-evidence
+          path: |
+            dashboard.py
+            pyproject.toml
+          retention-days: 7
+          if-no-files-found: warn
+
+  prepare:
+    name: Prepare Browser Environment
+    needs: runner-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: 0.9.24
+          enable-cache: true
+      - name: Sync Python environment
+        run: uv sync
+      - name: Verify Playwright and launch all browsers
+        run: |
+          uv run playwright install --with-deps
+          uv run python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              for name, browser_type in (
+                  ("chromium", playwright.chromium),
+                  ("firefox", playwright.firefox),
+                  ("webkit", playwright.webkit),
+              ):
+                  browser = browser_type.launch(headless=True)
+                  page = browser.new_page()
+                  page.set_content(f"<h1>{name} runner smoke</h1>")
+                  assert page.locator("h1").inner_text() == f"{name} runner smoke"
+                  print(f"{name}: launch passed")
+                  browser.close()
+          PY
+      - name: Upload browser environment evidence
+        if: ${{ always() }}
+        shell: bash
+        run: uv run playwright install --dry-run > playwright-install-plan.txt
+      - name: Save browser environment evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-browser-environment
+          path: playwright-install-plan.txt
+          retention-days: 7
+          if-no-files-found: warn
+
+  chromium:
+    name: Chromium Capture
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: 0.9.24
+      - name: Sync and install Chromium
+        run: |
+          uv sync
+          uv run playwright install --with-deps chromium
+      - name: Capture Chromium baselines for review
+        env:
+          RUN_CHROMIUM_BROWSER_TESTS: "1"
+          ORBIT_SNAPSHOT_UPDATE: "1"
+          ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-chromium-diffs
+        run: |
+          uv run python -m unittest \
+            test_dashboard_options_browser.DashboardOptionsBrowserTests.test_cached_quotes_refresh_after_expiry_and_keep_provider_state_visible \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_snapshots_protect_responsive_composition
+      - name: Upload Chromium review captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-chromium-baselines-review
+          path: |
+            visual_baselines/orbit_summary
+            artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+  firefox:
+    name: Firefox Capture
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: 0.9.24
+      - name: Sync and install Firefox
+        run: |
+          uv sync
+          uv run playwright install --with-deps firefox
+      - name: Capture Firefox baselines for review
+        env:
+          RUN_FIREFOX_BROWSER_TESTS: "1"
+          ORBIT_SNAPSHOT_UPDATE: "1"
+          ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-firefox-diffs
+        run: |
+          uv run python -m unittest \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_mobile_snapshot_protects_firefox_composition \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_desktop_snapshot_protects_firefox_typography \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_desktop_zoom_snapshots_protect_wrapping \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_landscape_tablet_snapshot_protects_responsive_composition \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_portrait_tablet_snapshot_protects_responsive_composition
+      - name: Upload Firefox review captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-firefox-baselines-review
+          path: |
+            visual_baselines/orbit_summary
+            artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+  webkit:
+    name: WebKit Capture
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: 0.9.24
+      - name: Sync and install WebKit
+        run: |
+          uv sync
+          uv run playwright install --with-deps webkit
+      - name: Capture WebKit baselines for review
+        env:
+          RUN_WEBKIT_BROWSER_TESTS: "1"
+          ORBIT_SNAPSHOT_UPDATE: "1"
+          WEBKIT_FAILURE_SCREENSHOT_PATH: artifacts/webkit-failure/iphone-chart-regression.png
+          ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-webkit-diffs
+        run: |
+          uv run python -m unittest \
+            test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_iphone_chart_details_are_readable \
+            test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_chart_failure_captures_configured_diagnostic_screenshot \
+            test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_navigation_failure_captures_configured_diagnostic_screenshot \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_mobile_snapshot_protects_safari_composition \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_portrait_tablet_snapshot_protects_safari_composition \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_landscape_tablet_snapshot_protects_safari_composition \
+            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_desktop_zoom_snapshots_protect_wrapping
+      - name: Upload WebKit review captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-webkit-baselines-review
+          path: |
+            visual_baselines/orbit_summary
+            artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+  browser-gate:
+    name: Hosted Runner Capture Gate
+    needs:
+      - runner-smoke
+      - prepare
+      - chromium
+      - firefox
+      - webkit
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report hosted runner capture results
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner-smoke: ${{ needs.runner-smoke.result }}"
+          echo "prepare:      ${{ needs.prepare.result }}"
+          echo "chromium:     ${{ needs.chromium.result }}"
+          echo "firefox:      ${{ needs.firefox.result }}"
+          echo "webkit:       ${{ needs.webkit.result }}"
+          test "${{ needs.runner-smoke.result }}" = "success"
+          test "${{ needs.prepare.result }}" = "success"
+          test "${{ needs.chromium.result }}" = "success"
+          test "${{ needs.firefox.result }}" = "success"
+          test "${{ needs.webkit.result }}" = "success"
