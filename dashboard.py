@@ -2721,6 +2721,7 @@ def render_orbit_overview_styles():
                 radial-gradient(circle at 67% 31%, rgba(58, 63, 215, .34), transparent 25rem),
                 linear-gradient(135deg, rgba(9, 11, 32, .98), rgba(4, 24, 48, .98));
             border-radius: 22px;
+            display: block;
             margin: -.25rem auto 1.25rem;
             max-width: 1380px;
             padding: 1.35rem 1.45rem 1.55rem;
