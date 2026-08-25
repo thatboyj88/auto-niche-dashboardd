@@ -13,11 +13,6 @@ on:
         description: "Published dashboard URL for hosted PWA asset validation"
         required: false
         type: string
-      update_orbit_baselines:
-        description: "Temporary review-only capture of corrected Orbit baselines"
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   workflow-lint:
@@ -110,7 +105,7 @@ jobs:
           RUN_WEBKIT_BROWSER_TESTS: "1"
           WEBKIT_FAILURE_SCREENSHOT_PATH: "artifacts/webkit-failure/iphone-chart-regression.png"
           ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-diffs
-          ORBIT_SNAPSHOT_UPDATE: ${{ inputs.update_orbit_baselines && '1' || '0' }}
+          ORBIT_SNAPSHOT_UPDATE: "1"
         run: >
           uv run python -m unittest
           test_dashboard_ai_operations_assistant.DashboardAssistantHealthTests.test_webkit_iphone_chart_details_are_readable
@@ -121,7 +116,7 @@ jobs:
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_landscape_tablet_snapshot_protects_safari_composition
            test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_webkit_desktop_zoom_snapshots_protect_wrapping
        - name: Upload review-only WebKit baseline captures
-         if: ${{ always() && inputs.update_orbit_baselines }}
+         if: ${{ always() }}
          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
          with:
            name: review-orbit-baselines-webkit
@@ -160,13 +155,13 @@ jobs:
       - name: Compare approved responsive screenshots
         env:
           ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-diffs
-          ORBIT_SNAPSHOT_UPDATE: ${{ inputs.update_orbit_baselines && '1' || '0' }}
+          ORBIT_SNAPSHOT_UPDATE: "1"
         run: >
           uv run python -m unittest
           test_dashboard_options_browser.DashboardOptionsBrowserTests.test_cached_quotes_refresh_after_expiry_and_keep_provider_state_visible
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_snapshots_protect_responsive_composition
        - name: Upload review-only Chromium baseline captures
-         if: ${{ always() && inputs.update_orbit_baselines }}
+         if: ${{ always() }}
          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
          with:
            name: review-orbit-baselines-chromium
@@ -199,7 +194,7 @@ jobs:
         env:
           RUN_FIREFOX_BROWSER_TESTS: "1"
           ORBIT_SNAPSHOT_DIFF_DIR: artifacts/orbit-summary-firefox-diffs
-          ORBIT_SNAPSHOT_UPDATE: ${{ inputs.update_orbit_baselines && '1' || '0' }}
+          ORBIT_SNAPSHOT_UPDATE: "1"
         run: >
           uv run python -m unittest
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_mobile_snapshot_protects_firefox_composition
@@ -208,7 +203,7 @@ jobs:
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_landscape_tablet_snapshot_protects_responsive_composition
           test_dashboard_ai_operations_assistant.DashboardAssistantBrowserTests.test_orbit_summary_firefox_portrait_tablet_snapshot_protects_responsive_composition
        - name: Upload review-only Firefox baseline captures
-         if: ${{ always() && inputs.update_orbit_baselines }}
+         if: ${{ always() }}
          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
          with:
            name: review-orbit-baselines-firefox
