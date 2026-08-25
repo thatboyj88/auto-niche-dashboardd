@@ -3639,7 +3639,7 @@ class DashboardAssistantHealthTests(unittest.TestCase):
                     arg=expected_heading,
                     timeout=20000,
                 )
-                DashboardAssistantBrowserTests._assert_portrait_chart_geometry(
+                DashboardAssistantBrowserTests()._assert_portrait_chart_geometry(
                     page, 1.0, expected_width=expected_width
                 )
                 unittest.TestCase().assertTrue(
