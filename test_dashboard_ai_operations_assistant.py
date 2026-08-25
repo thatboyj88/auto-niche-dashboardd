@@ -256,6 +256,57 @@ def _navigate_fixture_until_ready(
             time.sleep(0.25)
 
 
+def _write_orbit_observation_fixture(data_dir):
+    """Create stable paper-observation metadata for visual snapshots only."""
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    controller = {
+        "status": "RUNNING",
+        "started_at": "2024-01-01T00:00:00+00:00",
+        "last_cycle_at": "2024-01-02T00:57:36+00:00",
+        "last_data_health": "HEALTHY",
+        "cycles": 100,
+        "healthy_cycles": 100,
+        "unhealthy_cycles": 0,
+    }
+    engine = {
+        "capital": 15.19,
+        "position": 0,
+        "genuine_signals": 1,
+        "genuine_completed_trades": 1,
+        "last_signal": {
+            "payload": {
+                "entry_eligible": False,
+                "strategy_score": 80,
+            }
+        },
+        "last_completed_trade": {
+            "trade_number": 1,
+            "reason": "completed",
+        },
+        "persistence_health": {
+            "status": "AVAILABLE",
+            "error_code": None,
+            "last_error": None,
+            "operation": "read",
+        },
+    }
+    records = [
+        {"dataset": "PAPER_OPERATIONAL", "record_type": "SIGNAL"},
+        {"dataset": "PAPER_OPERATIONAL", "record_type": "TRADE"},
+    ]
+    (data_dir / "observation_controller.json").write_text(
+        json.dumps(controller), encoding="utf-8"
+    )
+    (data_dir / "paper_engine_state.json").write_text(
+        json.dumps(engine), encoding="utf-8"
+    )
+    (data_dir / "observations.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
 def _browser_dashboard_wrapper():
     """Return a Streamlit entry point with entirely local dashboard fixtures."""
     return """
@@ -1802,6 +1853,8 @@ class DashboardAssistantBrowserTests(unittest.TestCase):
             wrapper_path = os.path.join(temp_dir, "dashboard_browser_fixture.py")
             with open(wrapper_path, "w", encoding="utf-8") as wrapper_file:
                 wrapper_file.write(_browser_dashboard_wrapper())
+            fixture_data_dir = os.path.join(temp_dir, "observation-data")
+            _write_orbit_observation_fixture(fixture_data_dir)
 
             with sync_playwright() as playwright:
                 browser_type = getattr(playwright, browser_engine)
@@ -1840,6 +1893,7 @@ class DashboardAssistantBrowserTests(unittest.TestCase):
                         env={
                             **os.environ,
                             "DASHBOARD_TEST_PROVIDER_STATE": "HEALTHY",
+                            "OBSERVATION_DATA_DIR": fixture_data_dir,
                         },
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
